@@ -1,0 +1,26 @@
+# Tooling only: the collectors are standalone stdlib scripts, nothing here is
+# installed. They keep Omarchy's own collector style (2-space indent).
+
+[project]
+name = "omarchy-agent-usage"
+version = "0.2.0"
+description = "Collectors and tests for the Agent Usage Omarchy bar plugin"
+requires-python = ">=3.11"
+license = "MIT"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+indent-width = 2
+# The collectors have no .py extension; list them so `ruff check` finds them.
+extend-include = ["bin/omarchy-agent-usage-*"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP", "SIM", "I"]
+# E111/E114: Omarchy's collectors indent by 2, which ruff's pycodestyle rules
+# assume is 4.
+ignore = ["E111", "E114"]
+
+[tool.ruff.lint.per-file-ignores]
+# Synthetic fixtures read better as one record per line.
+"tests/*" = ["E501"]
