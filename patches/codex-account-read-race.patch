@@ -1,0 +1,54 @@
+--- /usr/bin/omarchy-agent-usage-codex	2026-10-25 14:59:03.652999386 -0300
++++ /usr/bin/omarchy-agent-usage-codex	2026-10-25 14:59:03.671890210 -0300
+@@ -495,6 +495,30 @@
+   raise TimeoutError(method)
+ 
+ 
++def send_request(proc, request_id, method, params=None):
++  proc.stdin.write(json.dumps({"id": request_id, "method": method, "params": params or {}}) + "\n")
++  proc.stdin.flush()
++
++
++def await_answers(proc, request_ids, timeout=8):
++  answers = {}
++  deadline = time.time() + timeout
++  while time.time() < deadline and len(answers) < len(request_ids):
++    ready, _, _ = select.select([proc.stdout], [], [], 0.25)
++    if not ready:
++      continue
++    line = proc.stdout.readline()
++    if not line:
++      break
++    try:
++      message = json.loads(line)
++    except Exception:
++      continue
++    if message.get("id") in request_ids:
++      answers[message["id"]] = message
++  return answers
++
++
+ def limit_window(window):
+   if not isinstance(window, dict):
+     return None
+@@ -544,8 +568,18 @@
+     rpc_request(proc, 1, "initialize", {"clientInfo": {"name": "omarchy-agent-usage", "version": "1"}}, timeout=8)
+     proc.stdin.write(json.dumps({"method": "initialized", "params": {}}) + "\n")
+     proc.stdin.flush()
+-    account_msg = rpc_request(proc, 2, "account/read", timeout=4)
+-    limits_msg = rpc_request(proc, 3, "account/rateLimits/read", timeout=4)
++    # codex 0.163's app-server can hold the account/read answer when the
++    # request lands while it is still loading the account at startup; the
++    # answer only goes out with the next request. Sending both requests
++    # before awaiting either releases it, and the plan also comes with the
++    # rate limits, so a missing account answer costs nothing.
++    send_request(proc, 2, "account/read")
++    send_request(proc, 3, "account/rateLimits/read")
++    answers = await_answers(proc, {2, 3}, timeout=8)
++    if 3 not in answers:
++      raise TimeoutError("account/rateLimits/read")
++    account_msg = answers.get(2) or {}
++    limits_msg = answers[3]
+ 
+     account = (account_msg.get("result") or {}).get("account") or {}
+     limits = (limits_msg.get("result") or {}).get("rateLimits") or {}
