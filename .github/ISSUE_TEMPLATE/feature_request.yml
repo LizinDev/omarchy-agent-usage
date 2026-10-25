@@ -1,0 +1,16 @@
+name: Feature request
+description: A new agent, a new number, or a change to the panel
+labels: [enhancement]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What you would like
+      placeholder: "A tab for the Gemini CLI, with its daily request quota."
+    validations:
+      required: true
+  - type: textarea
+    id: source
+    attributes:
+      label: Where the data lives
+      description: For a new agent, where it keeps usage on disk or which endpoint reports its quota, if you know.

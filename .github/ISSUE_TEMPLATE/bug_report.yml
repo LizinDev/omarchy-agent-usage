@@ -1,0 +1,39 @@
+name: Bug report
+description: Something looks wrong in the panel, or a number does not match
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please do not paste prompts, file paths with client
+        or project names, or tokens: the panel's numbers never need them.
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Agent
+      options: [Claude Code, Codex, Copilot, Hermes, OpenCode, Fireworks, The panel itself]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+      placeholder: "The Copilot tab shows 0 tokens today, but I used it this morning."
+    validations:
+      required: true
+  - type: textarea
+    id: record
+    attributes:
+      label: The agent's record
+      description: |
+        For a bundled agent: `~/.config/omarchy/plugins/io.github.lizindev.agent-usage/bin/omarchy-agent-usage-<agent> --print`.
+        Otherwise: `cat ~/.local/state/omarchy/agents/usage/<agent>.json`. Remove anything you would not share.
+      render: json
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: "`omarchy version`, the plugin version from its manifest.json, and the agent CLI's version"
+      placeholder: "Omarchy 4.0.5, Agent Usage 0.2.0, copilot 1.0.103"
+    validations:
+      required: true

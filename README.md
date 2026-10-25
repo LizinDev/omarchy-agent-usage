@@ -1,5 +1,9 @@
 # Agent Usage
 
+[![CI](https://github.com/LizinDev/omarchy-agent-usage/actions/workflows/ci.yml/badge.svg)](https://github.com/LizinDev/omarchy-agent-usage/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Omarchy 4](https://img.shields.io/badge/Omarchy-4.0.5-orange.svg)](https://omarchy.org/)
+
 Usage, limits and pace for every AI coding agent on the machine, in one panel
 on the [Omarchy](https://omarchy.org/) 4 bar: Claude Code, Codex and Fireworks
 like the built-in panel, plus **OpenCode, GitHub Copilot and Hermes** through
@@ -21,10 +25,10 @@ replaces it in place.
   models.
 - **Three more agents.** OpenCode (the 2.x database included), the GitHub
   Copilot CLI (with your real Copilot quota as limits) and the Hermes Agent
-  each get a tab, with tokens by day and by model.
+  each get a place on the rail, with tokens by day and by model.
 - **One refresh for everything.** The panel's own refresh runs Omarchy's
   collectors and the bundled ones together, so `r` in the panel, the refresh
-  timer and opening the panel cover every tab. No systemd timer to install.
+  timer and opening the panel cover every agent. No systemd timer to install.
 - **Numbers checked against an oracle.** Each bundled collector was compared
   with an independent count of the same source before it shipped (see
   [Accuracy](#accuracy) and the [devlog](DEVLOG.md)).
@@ -57,7 +61,7 @@ panel's, unchanged.
   here while this plugin is enabled.
 
 An agent shows up once it has recorded usage; one that never ran here stays
-out of the switcher, and with nothing to show the icon leaves the bar.
+off the rail, and with nothing to show the icon leaves the bar.
 
 ## Agents and where the numbers come from
 
@@ -102,6 +106,17 @@ fraction. The details that are easy to get wrong:
   the source; a subagent's opening turn is not counted as a prompt. Checked
   with SQL and with a second, independent implementation: equal.
 
+## Privacy
+
+Everything is read and computed on your machine. The bundled collectors open
+their sources read-only and count tokens, messages and sessions; they never
+read prompt or response text, and the records hold only numbers, model names
+and plan names. Two collectors make network requests, both to the service the
+quota belongs to: Copilot asks `api.github.com` for your quota with the token
+`gh` already holds, and OpenCode asks `opencode.ai` for OpenCode Go limits when
+you are signed in to Go. Omarchy's own collectors do the same for Claude, Codex
+and Fireworks.
+
 ## Install
 
 ```bash
@@ -115,8 +130,7 @@ limits.
 From a checkout:
 
 ```bash
-rsync -a --delete --exclude .git --exclude tests --exclude __pycache__ \
-  ./ ~/.config/omarchy/plugins/io.github.lizindev.agent-usage/
+make install
 omarchy plugin enable io.github.lizindev.agent-usage
 omarchy restart shell
 ```
@@ -163,37 +177,27 @@ collectors, not here.
   usage can be partial.
 - **OpenCode 2.x sessions on Anthropic or OpenAI providers** are invisible to
   the Claude and Codex collectors, which read only the 1.x table. Until they
-  read `session_message`, the OpenCode tab counts those sessions, named
+  read `session_message`, the OpenCode view counts those sessions, named
   `<model> · <provider>`.
 - **`codex exec --ephemeral`** saves no session, so that usage never reaches
-  the Codex tab.
+  the Codex view.
 
 ## Development
 
-```
-Panel.qml, Main.qml, Agent.qml, assets/   the panel (fork of omarchy.agents)
-bin/collect                              runs the bundled collectors
-bin/omarchy-agent-usage-<agent>          one collector per bundled agent
-tests/                                   unittest, synthetic data only
-patches/                                 fixes for Omarchy's packaged collectors
-```
-
 ```bash
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests
-omarchy plugin validate .
+make dev      # install into ~/.config/omarchy/plugins and restart the shell
+make check    # lint (Python, shell, QML), tests, manifest validation
 ```
 
-QML changes need `omarchy restart shell`; collector changes apply on the
-next refresh. The first commit imports the built-in panel unchanged, so `git
-diff <first commit> -- Panel.qml Main.qml` shows exactly what this fork
-changed. [DEVLOG.md](DEVLOG.md) records what was found and decided along the
-way.
+[CONTRIBUTING.md](CONTRIBUTING.md) covers the layout, the rules every
+collector keeps and how to release. [CHANGELOG.md](CHANGELOG.md) lists what
+changed in each version, and [DEVLOG.md](DEVLOG.md) records what was found
+and decided along the way.
 
 ## License
 
 MIT. The panel (`Panel.qml`, `Main.qml`, `Agent.qml`) and the agent marks in
 `assets/` (the OpenCode, Copilot and Hermes ones from Omarchy's `quattro`
 branch) come from [Omarchy](https://github.com/omacom/omarchy), © David
-Heinemeier Hansson; the
-collectors, the runner and the changes are © 2026 Pedro Henrique Braz
-Moreira. See [LICENSE](LICENSE).
+Heinemeier Hansson; the collectors, the runner and the changes are © 2026
+Pedro Henrique Braz Moreira. See [LICENSE](LICENSE).
