@@ -4,8 +4,8 @@
 
 The packaged omarchy-agent-usage-update only runs collectors that live in
 $OMARCHY_PATH/bin, but the panel shows any record that lands in the usage
-directory, so this user-side collector writes hermes.json there itself. The
-omarchy-agent-usage-local.timer user unit runs it every few minutes.
+directory, so this collector writes hermes.json there itself. The Agent Usage
+plugin runs it through bin/collect on every refresh.
 
 Tokens come from Hermes' own state database. `session_model_usage` holds one
 row per session, model, billing provider and task, auxiliary tasks (title

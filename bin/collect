@@ -1,0 +1,58 @@
+#!/bin/bash
+
+# Runs the collectors bundled with this plugin the way omarchy-agent-usage-update
+# runs the packaged ones: in parallel, one per agent, each writing its own record
+# to ~/.local/state/omarchy/agents/usage/ (a collector that fails keeps its last
+# good record). Same flags as the packaged runner.
+#
+# usage: collect [--force] [--limits-only] [--except <agent>]... [agent...]
+
+dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+flags=()
+only=()
+declare -A excluded
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  --force | --limits-only) flags+=("$1") ;;
+  --except)
+    excluded[$2]=1
+    shift
+    ;;
+  *) only+=("$1") ;;
+  esac
+  shift
+done
+
+wanted() {
+  local agent="$1" candidate
+  [[ -n ${excluded[$agent]} ]] && return 1
+  (( ${#only[@]} == 0 )) && return 0
+  for candidate in "${only[@]}"; do
+    [[ $candidate == "$agent" ]] && return 0
+  done
+  return 1
+}
+
+# Omarchy's own runner already writes <agent>.json for every collector it ships.
+# Once a release ships one of these agents (upstream added OpenCode, Copilot and
+# Hermes in October 2026), that collector owns the record and the bundled copy
+# steps aside instead of fighting it for the same file.
+native="${OMARCHY_PATH:-/usr/share/omarchy}/bin"
+
+pids=()
+for collector in "$dir"/omarchy-agent-usage-*; do
+  [[ -f $collector ]] || continue
+  agent="${collector##*/omarchy-agent-usage-}"
+  wanted "$agent" || continue
+  [[ -e $native/omarchy-agent-usage-$agent ]] && continue
+  python3 "$collector" "${flags[@]}" &
+  pids+=($!)
+done
+
+status=0
+for pid in "${pids[@]}"; do
+  wait "$pid" || status=1
+done
+exit $status

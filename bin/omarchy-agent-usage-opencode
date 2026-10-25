@@ -4,8 +4,8 @@
 
 The packaged omarchy-agent-usage-update only runs collectors that live in
 $OMARCHY_PATH/bin, but the panel shows any record that lands in the usage
-directory — so this user-side collector writes opencode.json there itself.
-The omarchy-agent-usage-opencode.timer user unit runs it every few minutes.
+directory, so this collector writes opencode.json there itself. The Agent Usage
+plugin runs it through bin/collect on every refresh.
 
 Local stats come from opencode's own database: the 2.x `session_message` and
 `session_v2` tables, and the 1.x `message` table for sessions 2.x has not

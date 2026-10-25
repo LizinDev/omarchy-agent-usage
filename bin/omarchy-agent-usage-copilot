@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 # omarchy:summary=Collect GitHub Copilot CLI usage
-# omarchy:args=[--stdout]
+# omarchy:args=[--print]
 # omarchy:hidden=true
 """Collect Copilot CLI usage into one display-ready JSON record."""
 

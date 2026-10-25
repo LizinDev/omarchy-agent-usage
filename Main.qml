@@ -4,8 +4,10 @@ import Quickshell.Io
 
 // The display side of agent usage. All extraction lives behind
 // omarchy-agent-usage-update, which writes one JSON record per agent into
-// the usage directory; this file only discovers those records, watches them
-// for changes, and optionally merges snapshots synced from other machines.
+// the usage directory, and behind the collectors this plugin bundles in bin/
+// (OpenCode, Copilot, Hermes), which write theirs next to them; this file
+// only discovers those records, watches them for changes, and optionally
+// merges snapshots synced from other machines.
 Item {
   id: root
   visible: false
@@ -157,7 +159,49 @@ Item {
     return command
   }
 
+  // The bundled collectors run beside the packaged ones on every refresh,
+  // with the same flags, so the panel's own refresh covers them too.
+  readonly property string bundledRunner: decodeURIComponent(String(Qt.resolvedUrl("bin/collect")).replace(/^file:\/\//, ""))
+  readonly property var bundledIds: ["copilot", "hermes", "opencode"]
+  property string pendingBundledKind: ""
+
+  Process {
+    id: bundledProcess
+    running: false
+    onExited: {
+      root.rescanAgents()
+      if (root.pendingBundledKind !== "") {
+        var kind = root.pendingBundledKind
+        root.pendingBundledKind = ""
+        root.runBundled(kind)
+      }
+    }
+
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: if (text.trim() !== "") console.warn("agent-usage", text.trim())
+    }
+  }
+
+  function runBundled(kind, agentIds) {
+    var command = ["bash", root.bundledRunner].concat(updateCommand(kind, agentIds).slice(1))
+    if (agentIds) {
+      // A retry names agents; only the ones bundled here are this runner's.
+      var named = []
+      for (var i = 0; i < agentIds.length; i++)
+        if (root.bundledIds.indexOf(agentIds[i]) !== -1) named.push(agentIds[i])
+      if (named.length === 0) return
+    }
+    if (bundledProcess.running) {
+      if (kind === "force" || root.pendingBundledKind === "") root.pendingBundledKind = kind
+      return
+    }
+    bundledProcess.command = command
+    bundledProcess.running = true
+  }
+
   function runUpdate(kind, agentIds) {
+    runBundled(kind, agentIds)
     if (updateProcess.running) {
       // Collapse queued requests to one full rerun; a forced refresh outranks
       // the cheaper kinds it might have been queued behind.
