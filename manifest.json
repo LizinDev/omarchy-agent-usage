@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.lizindev.agent-usage",
   "name": "Agent Usage",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "LizinDev",
   "license": "MIT",
   "description": "Usage, limits and pace for every AI coding agent on the machine — Claude Code, Codex, Fireworks, OpenCode, Copilot and Hermes — in one bar panel.",

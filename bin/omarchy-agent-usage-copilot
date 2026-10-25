@@ -277,7 +277,10 @@ def parse_quota_response(payload):
     except (TypeError, ValueError):
       continue
     result["limits"].append({
-      "label": label,
+      # Copilot quotas are monthly. The label names the window so the panel can
+      # place the pace marker; the title keeps the quota's own name on screen.
+      "label": f"{label} (monthly)",
+      "title": label,
       "percent": percent,
       "resetsAt": utc_iso(payload.get("quota_reset_date_utc") or payload.get("quota_reset_date")),
     })

@@ -3,6 +3,49 @@
 What was found, decided and measured while building Agent Usage, newest
 first. The README says what the plugin does; this says why it is the way it is.
 
+## 2026-10-25 — 0.2.0: the rail
+
+Five directions were mocked up at full size with real numbers (an overview
+list, a vertical rail, a card grid, icon-only tabs, a combined day view). The
+rail won: it fixes the truncated switcher, shows every agent's state at once,
+and leaves the detail page as wide as it can be.
+
+The pieces, and where they come from:
+
+- **Rail.** One 40 px disc per agent with its mark, ringed (Qt Quick Shapes,
+  `PathAngleArc`) by its fullest limit: the foreground normally, the accent on
+  the agent shown, red from 90%, like the built-in meters. An accent marker
+  slides to the agent on show. Agents without a quota keep a bare ring.
+- **Hero.** The agent's mark sits in a square tinted with the theme accent at
+  12%, and refresh is a matching tinted square whose glyph spins while any
+  collector runs. Both follow the tinted squares of Omarchy's own redesigned
+  panel on `quattro`.
+- **Today.** The day's tokens in the theme's `displayLarge` size, prompts and
+  sessions beside it: the first thing worth reading.
+- **Limits.** The built-in meter gained the pace marker that `quattro` draws
+  for scoped allowances, here at the window's elapsed time, and a forecast
+  borrowed from ai-usagebar's macOS dashboard: the current rate projected to
+  the reset (`~39% left`), or the time until it runs out, in the urgent color.
+  It stays quiet for the first 5% of a window.
+- **Week.** Columns instead of rows, today in the accent, empty days on a
+  hairline floor (solid backgrounds on empty days read as heavy blocks).
+- **Motion.** One orchestrated moment: opening the panel sweeps the rings and
+  fills the meters from zero; switching agents fades the page in (220 ms).
+
+Marks: the 4.0.5 package only ships Claude, Codex and Fireworks, so the other
+three would all fall back to the same robot glyph on the rail. The OpenCode,
+Copilot and Hermes marks come from `quattro`'s assets.
+
+Copilot quotas reset monthly, but their labels ("Chat") named no window, so
+the panel could draw neither pace nor forecast. The collector now sends
+`label: "Chat (monthly)"` and `title: "Chat"`; the panel reads the window from
+the label and shows the title.
+
+The fonts, sizes and colors are the shell's: the bar's font family, the
+`Style.font` scale (caption 10 to displayLarge 28), the theme's foreground,
+accent and urgent colors, and the theme's corner radius (square on sharp
+themes, rounded on others).
+
 ## 2026-10-25 — 0.1.0: the fork
 
 ### Why a fork

@@ -200,6 +200,8 @@ Item {
     bundledProcess.running = true
   }
 
+  readonly property bool refreshing: updateProcess.running || bundledProcess.running
+
   function runUpdate(kind, agentIds) {
     runBundled(kind, agentIds)
     if (updateProcess.running) {

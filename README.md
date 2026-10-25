@@ -13,6 +13,12 @@ replaces it in place.
 
 ## What it adds
 
+- **A panel built for many agents.** Every agent sits on a rail down the left
+  edge, ringed by its fullest limit, so the whole picture reads at a glance and
+  nothing truncates. The page beside it opens on today's tokens in large type,
+  then the limits with a pace marker and a forecast (what the current pace
+  leaves at the reset, or when it runs out), the week as columns, and the
+  models.
 - **Three more agents.** OpenCode (the 2.x database included), the GitHub
   Copilot CLI (with your real Copilot quota as limits) and the Hermes Agent
   each get a tab, with tokens by day and by model.
@@ -27,19 +33,25 @@ replaces it in place.
   clone` uses: enabling the plugin swaps the built-in out of its spot in the
   bar, and anything that still calls `omarchy.agents` reaches this panel.
 
-Everything else (meters with pace, the weekly chart, the model breakdown,
-prepaid balances, cross-device sync) is the built-in panel's, unchanged.
+The data model, prepaid balances and cross-device sync are the built-in
+panel's, unchanged.
 
 ## Using it
 
 - **Bar icon:** left click opens the panel, right click launches an agent
   (`omarchy-agent --pick`), middle click shows the next agent.
-- **Panel:** `h`/`l` switch agent, `j`/`k` scroll, `r` or Enter refreshes,
+- **Panel:** click an agent on the rail or press `h`/`l` to switch, `j`/`k`
+  scroll, `r` or Enter refreshes (so does the tinted button in the corner),
   Tab moves to the neighboring bar panel, Esc closes.
-- **Limits** show the share of each allowance used, a meter and the time
-  until it resets; **Tokens by day** covers the last week (hover today for
-  prompts and sessions); **Tokens by model** is all-time, with the input,
-  output and cache split on hover.
+- **Rail:** each ring is the agent's fullest limit (accent on the agent shown,
+  red from 90%); hover a disc for its name, that limit and today's tokens.
+- **Limits:** the share used, a meter whose accent tick marks how far the
+  window's clock has run (fill past the tick means ahead of pace), the reset
+  countdown and a forecast: `~39% left at reset`, or `Runs out in 33m` in red.
+- **This week:** one column per day scaled to the busiest, today in the
+  accent; hover a column for its tokens (today adds prompts and sessions).
+- **By model:** all-time, heaviest first; hover for the input, output and cache
+  split.
 - **IPC:** `omarchy-shell agent-usage <open|close|toggle|refresh|next>`, or
   `omarchy-shell shell toggle omarchy.agents '{}'`, which the shell routes
   here while this plugin is enabled.
@@ -179,7 +191,9 @@ way.
 
 ## License
 
-MIT. The panel (`Panel.qml`, `Main.qml`, `Agent.qml`, `assets/`) comes from
-[Omarchy](https://github.com/omacom/omarchy), © David Heinemeier Hansson; the
+MIT. The panel (`Panel.qml`, `Main.qml`, `Agent.qml`) and the agent marks in
+`assets/` (the OpenCode, Copilot and Hermes ones from Omarchy's `quattro`
+branch) come from [Omarchy](https://github.com/omacom/omarchy), © David
+Heinemeier Hansson; the
 collectors, the runner and the changes are © 2026 Pedro Henrique Braz
 Moreira. See [LICENSE](LICENSE).

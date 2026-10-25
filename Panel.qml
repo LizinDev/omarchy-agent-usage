@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Shapes
 import Quickshell
 import Quickshell.Io
 import qs.Commons
@@ -18,6 +19,12 @@ Panel {
   readonly property color surface: Commons.Color.popups.background
   readonly property color track: Style.selectedFillFor(foreground, Commons.Color.accent)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
+
+  // The rail: one disc per agent down the left edge.
+  readonly property bool showRail: providers.length > 1
+  readonly property real railButtonSize: Style.space(40)
+  readonly property real ringWidth: Math.max(2, Style.space(3))
+  readonly property real markerWidth: Math.max(2, Style.space(3))
 
   readonly property var providers: usage.enabledProviders
   // The selection follows the provider, not the slot it happens to sit in: a
@@ -108,7 +115,8 @@ Panel {
     return {
       title: String(title || "") !== "" ? String(title) : windowTitle(label),
       percent: expired ? 0 : Number(percent),
-      resetAt: expired ? "" : String(resetAt || "")
+      resetAt: expired ? "" : String(resetAt || ""),
+      spanMs: windowSpanMs(label)
     }
   }
 
@@ -139,6 +147,29 @@ Panel {
     if (!w || w.resetAt === "") return -1
     var ms = new Date(w.resetAt).getTime()
     return isFinite(ms) ? ms - root.nowMs : -1
+  }
+
+  // How far through its window the clock is, 0 to 1; -1 when the window's
+  // length or reset is unknown.
+  function windowElapsed(w) {
+    if (!w || !(w.spanMs > 0)) return -1
+    var left = resetMsFor(w)
+    if (!(left > 0)) return -1
+    return clamp(1 - left / w.spanMs, 0, 1)
+  }
+
+  // Where the current pace lands at the reset. Too early in a window the
+  // projection says nothing useful, so it waits for 5% of the clock.
+  function limitForecast(w) {
+    var elapsed = windowElapsed(w)
+    if (elapsed < 0.05 || !w || !(w.percent >= 0)) return null
+    if (w.percent >= 1) return { text: "Limit reached", short: true, ahead: true }
+    var projected = w.percent / elapsed
+    if (projected >= 1) {
+      var rate = w.percent / (elapsed * w.spanMs)
+      return { text: "Runs out in " + formatDuration((1 - w.percent) / rate), short: true, ahead: true }
+    }
+    return { text: "~" + Math.round((1 - projected) * 100) + "% left at reset", short: false, ahead: w.percent > elapsed }
   }
 
   function formatDuration(ms) {
@@ -358,10 +389,10 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(380))
-    // Taller than the control panels on purpose: this one is a dashboard, and
-    // the whole point is reading limits and history without scrolling.
-    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(640))
+    contentWidth: panel.fittedContentWidth(Style.space(420))
+    // A dashboard: the whole point is reading limits and history without
+    // scrolling, so it may run taller than the control panels.
+    contentHeight: panel.fittedContentHeight(Math.max(column.implicitHeight, rail.implicitHeight), Style.space(660))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -381,9 +412,66 @@ Panel {
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) { if (t === "r" || t === "R") root.refreshNow() }
 
+      // ---------- Rail: every agent's mark, ringed by its fullest limit ----------
+      Column {
+        id: rail
+        visible: root.showRail
+        anchors.left: parent.left
+        anchors.leftMargin: root.markerWidth + Style.space(6)
+        anchors.top: parent.top
+        width: root.railButtonSize
+        spacing: Style.space(10)
+
+        Repeater {
+          model: root.providers
+
+          RailButton {
+            required property var modelData
+            required property int index
+            provider: modelData
+            selected: index === root.providerIndex
+            hasCursor: root.cursorActive && index === root.providerIndex
+            onClicked: {
+              root.cursorActive = true
+              root.selectProvider(index)
+            }
+          }
+        }
+      }
+
+      // The accent marker slides to the agent on show.
+      Rectangle {
+        visible: rail.visible
+        x: 0
+        width: root.markerWidth
+        height: Math.round(root.railButtonSize * 0.56)
+        y: rail.y + root.providerIndex * (root.railButtonSize + rail.spacing) + (root.railButtonSize - height) / 2
+        radius: Math.min(width / 2, Style.cornerRadius)
+        color: Commons.Color.accent
+
+        Behavior on y {
+          NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
+        }
+      }
+
+      Rectangle {
+        id: railDivider
+        visible: rail.visible
+        anchors.left: rail.right
+        anchors.leftMargin: Style.space(12)
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        width: 1
+        color: root.alpha(root.foreground, 0.08)
+      }
+
       Flickable {
         id: panelFlick
-        anchors.fill: parent
+        anchors.left: rail.visible ? railDivider.right : parent.left
+        anchors.leftMargin: rail.visible ? Style.space(16) : 0
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
         contentWidth: width
         contentHeight: column.implicitHeight
         clip: true
@@ -395,57 +483,84 @@ Panel {
         Column {
           id: column
           width: panelFlick.width
-          spacing: Style.space(12)
+          spacing: Style.space(16)
 
-          // ---------- Hero: provider mark · name · plan ----------
-          PanelHero {
+          // A new agent's page settles in rather than snapping.
+          opacity: 1
+          SequentialAnimation on opacity {
+            id: switchFade
+            running: false
+            NumberAnimation { to: 0.35; duration: 0 }
+            NumberAnimation { to: 1; duration: 220; easing.type: Easing.OutCubic }
+          }
+          Connections {
+            target: root
+            function onProviderIndexChanged() { switchFade.restart() }
+          }
+
+          // ---------- Hero: tinted mark · name · plan · refresh ----------
+          Item {
             id: hero
             visible: !!root.provider
             width: parent.width
-            title: root.provider ? root.provider.providerName : ""
-            meta: root.heroMeta(root.provider)
-            foreground: root.foreground
-            fontFamily: root.fontFamily
+            implicitHeight: Math.max(heroMark.height, heroText.implicitHeight)
 
-            iconComponent: Component {
-              Item {
-                id: heroMark
-                property var candidates: root.iconCandidatesForProvider(root.provider, root.surface)
-                // Provider objects are rebuilt on every refresh, which churns the
-                // array's identity without changing its content. Restart the fallback
-                // walk only when the URLs change: re-pointing source at a URL whose
-                // load already failed emits no statusChanged, so an identity-only
-                // reset would strand the walker on a missing -light twin.
-                property string candidatesKey: candidates.join("\n")
-                property int candidateIndex: 0
-                onCandidatesKeyChanged: candidateIndex = 0
+            Rectangle {
+              id: heroMark
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              width: Style.space(44)
+              height: width
+              radius: Style.cornerRadius
+              color: root.alpha(Commons.Color.accent, 0.12)
 
-                width: Style.font.display
-                height: Style.font.display
-
-                Image {
-                  id: heroMarkImage
-                  anchors.fill: parent
-                  source: heroMark.candidateIndex < heroMark.candidates.length ? heroMark.candidates[heroMark.candidateIndex] : ""
-                  sourceSize.width: Style.font.display * 2
-                  sourceSize.height: Style.font.display * 2
-                  fillMode: Image.PreserveAspectFit
-                  // Advancing source from inside its own status change trips the
-                  // binding-loop detector; defer the step one tick.
-                  onStatusChanged: if (status === Image.Error && heroMark.candidateIndex < heroMark.candidates.length)
-                    Qt.callLater(function() { heroMark.candidateIndex++ })
-                }
-
-                Text {
-                  textFormat: Text.PlainText
-                  anchors.centerIn: parent
-                  visible: heroMarkImage.status !== Image.Ready
-                  text: button.text
-                  color: root.foreground
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.display
-                }
+              ProviderIcon {
+                anchors.centerIn: parent
+                provider: root.provider
+                size: Style.font.display
               }
+            }
+
+            Column {
+              id: heroText
+              anchors.left: heroMark.right
+              anchors.leftMargin: Style.space(14)
+              anchors.right: refreshButton.left
+              anchors.rightMargin: Style.space(10)
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(3)
+
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                text: root.provider ? root.provider.providerName : ""
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.heading
+                font.bold: true
+                elide: Text.ElideRight
+              }
+
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                text: root.heroMeta(root.provider).toUpperCase()
+                color: root.provider && String(root.provider.usageStatusText || "") !== "" ? root.urgent : root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.letterSpacing: 1.4
+                elide: Text.ElideRight
+              }
+            }
+
+            HeroButton {
+              id: refreshButton
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              glyph: "󰑓"
+              tooltip: "Refresh (r)"
+              spinning: usage.refreshing
+              onClicked: root.refreshNow()
             }
           }
 
@@ -453,48 +568,12 @@ Panel {
             visible: root.providers.length === 0
             width: parent.width
             topPadding: Style.space(24)
-            text: "No AI coding subscriptions found.\nAgents show up here once you've used them."
+            text: "No AI coding agents found.\nAgents show up here once you've used them."
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.WordWrap
-          }
-
-          // ---------- Provider switch ----------
-          Row {
-            id: providerSwitch
-            visible: root.providers.length > 1
-            width: parent.width
-            spacing: Style.spacing.md
-
-            readonly property real cellWidth: root.providers.length > 0
-              ? (width - spacing * (root.providers.length - 1)) / root.providers.length
-              : 0
-
-            Repeater {
-              model: root.providers
-
-              Button {
-                required property var modelData
-                required property int index
-
-                width: providerSwitch.cellWidth
-                text: modelData.providerName
-                selected: index === root.providerIndex
-                hasCursor: root.cursorActive && index === root.providerIndex
-                bordered: true
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                fontSize: Style.font.bodySmall
-                verticalPadding: Style.spacing.controlPaddingY
-                onClicked: {
-                  root.cursorActive = true
-                  root.selectProvider(index)
-                }
-                onHovered: function(isHovered) { if (isHovered) root.cursorActive = true }
-              }
-            }
           }
 
           // ---------- Status ----------
@@ -522,12 +601,76 @@ Panel {
             }
           }
 
-          // ---------- Balance / limits ----------
-          PanelSeparator {
-            visible: balanceSection.visible || limitsSection.visible
-            foreground: root.foreground
+          // ---------- Today ----------
+          Item {
+            id: todayBlock
+            visible: !!root.provider
+            width: parent.width
+            implicitHeight: todayValue.implicitHeight + todayCaption.implicitHeight
+
+            Text {
+              id: todayValue
+              anchors.left: parent.left
+              anchors.top: parent.top
+              textFormat: Text.PlainText
+              text: root.provider ? usage.formatTokenCount(Number(root.provider.todayTotalTokens || 0)) : ""
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.displayLarge
+              font.bold: true
+            }
+
+            Text {
+              id: todayCaption
+              anchors.left: parent.left
+              anchors.top: todayValue.bottom
+              textFormat: Text.PlainText
+              text: "TOKENS TODAY"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.letterSpacing: 1.4
+            }
+
+            Column {
+              anchors.right: parent.right
+              anchors.bottom: parent.bottom
+              spacing: Style.space(2)
+              visible: !!root.provider && root.provider.hasPromptStats !== false
+
+              Repeater {
+                model: root.provider ? [
+                  { value: Number(root.provider.todayPrompts || 0), label: Number(root.provider.todayPrompts || 0) === 1 ? "prompt" : "prompts" },
+                  { value: Number(root.provider.todaySessions || 0), label: Number(root.provider.todaySessions || 0) === 1 ? "session" : "sessions" }
+                ] : []
+
+                Row {
+                  required property var modelData
+                  anchors.right: parent.right
+                  spacing: Style.space(6)
+
+                  Text {
+                    textFormat: Text.PlainText
+                    text: String(modelData.value)
+                    color: root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                    font.bold: true
+                  }
+
+                  Text {
+                    textFormat: Text.PlainText
+                    text: modelData.label
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                  }
+                }
+              }
+            }
           }
 
+          // ---------- Balance / limits ----------
           Column {
             id: balanceSection
             visible: !!root.balance
@@ -567,7 +710,8 @@ Panel {
                 text: root.balance ? root.formatMoney(root.balance.remaining, root.balance.currency) : ""
                 color: root.balanceAlarming ? root.urgent : root.foreground
                 font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
+                font.pixelSize: Style.font.body
+                font.bold: true
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
               }
@@ -595,7 +739,7 @@ Panel {
             id: limitsSection
             visible: root.limits.length > 0
             width: parent.width
-            spacing: Style.space(10)
+            spacing: Style.space(14)
 
             PanelSectionHeader {
               text: "LIMITS"
@@ -614,60 +758,93 @@ Panel {
             }
           }
 
-          // ---------- Usage ----------
-          PanelSeparator {
-            visible: usageSection.visible
-            foreground: root.foreground
-          }
-
+          // ---------- This week ----------
           Column {
-            id: usageSection
+            id: weekSection
             visible: !!root.provider && root.provider.recentDays && root.provider.recentDays.length > 0
             width: parent.width
-            spacing: Style.spacing.md
+            spacing: Style.space(8)
 
             readonly property var days: root.provider ? (root.provider.recentDays || []) : []
             readonly property real peak: Math.max(1, root.weekPeak(root.provider))
 
-            PanelSectionHeader {
+            Item {
               width: parent.width
-              text: "TOKENS BY DAY"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
+              implicitHeight: weekHeader.implicitHeight
+
+              PanelSectionHeader {
+                id: weekHeader
+                text: "THIS WEEK"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+              }
+
+              Text {
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                textFormat: Text.PlainText
+                text: "peak " + usage.formatTokenCount(root.weekPeak(root.provider))
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
             }
 
-            Repeater {
-              model: usageSection.days
+            Row {
+              id: weekChart
+              width: parent.width
+              height: Style.space(72)
+              spacing: Style.space(6)
 
-              DayRow {
-                required property var modelData
-                required property int index
+              readonly property real columnWidth: (width - spacing * Math.max(0, weekSection.days.length - 1)) / Math.max(1, weekSection.days.length)
 
-                width: usageSection.width
-                day: modelData
-                ratio: Number(modelData.messageCount || 0) / usageSection.peak
-                // By date, not by position: the Claude stats-cache fallback can
-                // hand us a window that stops short of today.
-                today: String(modelData.date || "") === root.todayDate()
+              Repeater {
+                model: weekSection.days
+
+                DayColumn {
+                  required property var modelData
+                  width: weekChart.columnWidth
+                  height: weekChart.height
+                  day: modelData
+                  ratio: Number(modelData.messageCount || 0) / weekSection.peak
+                  today: String(modelData.date || "") === root.todayDate()
+                }
+              }
+            }
+
+            Row {
+              width: parent.width
+              spacing: weekChart.spacing
+
+              Repeater {
+                model: weekSection.days
+
+                Text {
+                  required property var modelData
+                  readonly property bool today: String(modelData.date || "") === root.todayDate()
+                  width: weekChart.columnWidth
+                  horizontalAlignment: Text.AlignHCenter
+                  textFormat: Text.PlainText
+                  text: today ? "Today" : root.dayName(modelData.date)
+                  color: today ? Commons.Color.accent : root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: today
+                }
               }
             }
           }
 
           // ---------- Models ----------
-          PanelSeparator {
-            visible: modelSection.visible
-            foreground: root.foreground
-          }
-
           Column {
             id: modelSection
             visible: root.models.length > 0
             width: parent.width
-            spacing: Style.spacing.md
+            spacing: Style.space(6)
 
             PanelSectionHeader {
               width: parent.width
-              text: "TOKENS BY MODEL"
+              text: "BY MODEL · ALL TIME"
               foreground: root.foreground
               fontFamily: root.fontFamily
             }
@@ -677,8 +854,10 @@ Panel {
 
               ModelRow {
                 required property var modelData
+                required property int index
                 width: modelSection.width
                 row: modelData
+                lead: index === 0
                 // Scaled to the heaviest model, so the top row is always full —
                 // the same scale-to-peak the weekly chart uses for its busiest day.
                 share: modelData.total / Math.max(1, root.models[0].total)
@@ -703,12 +882,201 @@ Panel {
     }
   }
 
-  // A limit window: label and percentage, meter, and reset countdown.
+  // An agent on the rail: its mark in a disc, ringed by its fullest limit.
+  // The ring is the agent's state at a glance, so it stays even unselected.
+  component RailButton: Item {
+    id: railButton
+    property var provider: null
+    property bool selected: false
+    property bool hasCursor: false
+    signal clicked()
+
+    readonly property var window: root.bindingWindow(provider)
+    readonly property real percent: window ? root.clamp(window.percent, 0, 1) : -1
+    readonly property bool alarming: percent >= 0.9
+    // Zero while the panel is closed, so every ring sweeps in as it opens.
+    property real shown: root.opened ? Math.max(0, percent) : 0
+    Behavior on shown { NumberAnimation { duration: 520; easing.type: Easing.OutCubic } }
+
+    width: root.railButtonSize
+    height: width
+
+    Rectangle {
+      anchors.centerIn: parent
+      width: parent.width - root.ringWidth * 2 - Style.space(4)
+      height: width
+      radius: width / 2
+      color: railButton.selected ? root.alpha(Commons.Color.accent, 0.16)
+        : (railHover.containsMouse ? root.alpha(root.foreground, 0.07) : "transparent")
+      border.width: railButton.hasCursor ? Math.max(1, Style.hoverBorderWidth) : 0
+      border.color: Commons.Color.accent
+
+      Behavior on color { ColorAnimation { duration: 140 } }
+    }
+
+    Shape {
+      anchors.fill: parent
+      preferredRendererType: Shape.CurveRenderer
+
+      ShapePath {
+        strokeColor: root.alpha(root.foreground, 0.12)
+        strokeWidth: root.ringWidth
+        fillColor: "transparent"
+        PathAngleArc {
+          centerX: railButton.width / 2
+          centerY: railButton.height / 2
+          radiusX: railButton.width / 2 - root.ringWidth / 2
+          radiusY: radiusX
+          startAngle: -90
+          sweepAngle: 360
+        }
+      }
+
+      ShapePath {
+        strokeColor: railButton.percent < 0 ? "transparent"
+          : railButton.alarming ? root.urgent
+          : railButton.selected ? Commons.Color.accent : root.foreground
+        strokeWidth: root.ringWidth
+        fillColor: "transparent"
+        capStyle: ShapePath.RoundCap
+        PathAngleArc {
+          centerX: railButton.width / 2
+          centerY: railButton.height / 2
+          radiusX: railButton.width / 2 - root.ringWidth / 2
+          radiusY: radiusX
+          startAngle: -90
+          sweepAngle: 360 * railButton.shown
+        }
+      }
+    }
+
+    ProviderIcon {
+      anchors.centerIn: parent
+      provider: railButton.provider
+      size: Math.round(root.railButtonSize * 0.42)
+      opacity: railButton.selected || railHover.containsMouse ? 1 : 0.72
+      Behavior on opacity { NumberAnimation { duration: 140 } }
+    }
+
+    MouseArea {
+      id: railHover
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: railButton.clicked()
+    }
+
+    PanelToolTip {
+      visible: railHover.containsMouse
+      text: {
+        if (!railButton.provider) return ""
+        var line = railButton.provider.providerName
+        if (railButton.window)
+          line += " · " + railButton.window.title + " " + Math.round(railButton.window.percent * 100) + "%"
+        return line + " · " + usage.formatTokenCount(Number(railButton.provider.todayTotalTokens || 0)) + " today"
+      }
+      fontFamily: root.fontFamily
+    }
+  }
+
+  // A provider's mark, falling back to the bar glyph when it ships none.
+  component ProviderIcon: Item {
+    id: mark
+    property var provider: null
+    property var candidates: root.iconCandidatesForProvider(provider, root.surface)
+    // Provider objects are rebuilt on every refresh, which churns the
+    // array's identity without changing its content. Restart the fallback
+    // walk only when the URLs change.
+    property string candidatesKey: candidates.join("\n")
+    property int candidateIndex: 0
+    onCandidatesKeyChanged: candidateIndex = 0
+    property real size: Style.font.heading
+
+    width: size
+    height: size
+
+    Image {
+      id: markImage
+      anchors.fill: parent
+      source: mark.candidateIndex < mark.candidates.length ? mark.candidates[mark.candidateIndex] : ""
+      sourceSize.width: mark.size * 2
+      sourceSize.height: mark.size * 2
+      fillMode: Image.PreserveAspectFit
+      // Advancing source from inside its own status change trips the
+      // binding-loop detector; defer the step one tick.
+      onStatusChanged: if (status === Image.Error && mark.candidateIndex < mark.candidates.length)
+        Qt.callLater(function() { mark.candidateIndex++ })
+    }
+
+    Text {
+      anchors.centerIn: parent
+      visible: markImage.status !== Image.Ready
+      textFormat: Text.PlainText
+      text: button.text
+      color: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: mark.size
+    }
+  }
+
+  // The tinted square in the hero's corner, as in Omarchy's newer panels.
+  component HeroButton: Rectangle {
+    id: heroButton
+    signal clicked()
+    property string glyph: ""
+    property string tooltip: ""
+    property bool spinning: false
+
+    implicitWidth: Style.space(34)
+    implicitHeight: implicitWidth
+    radius: Style.cornerRadius
+    color: root.alpha(Commons.Color.accent, heroMouse.containsMouse ? 0.3 : 0.12)
+
+    Behavior on color { ColorAnimation { duration: 140 } }
+
+    Text {
+      id: heroGlyph
+      anchors.centerIn: parent
+      textFormat: Text.PlainText
+      text: heroButton.glyph
+      color: Commons.Color.accent
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.heading
+
+      RotationAnimation on rotation {
+        running: heroButton.spinning
+        from: 0
+        to: 360
+        duration: 900
+        loops: Animation.Infinite
+        onRunningChanged: if (!running) heroGlyph.rotation = 0
+      }
+    }
+
+    MouseArea {
+      id: heroMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: heroButton.clicked()
+    }
+
+    PanelToolTip {
+      visible: heroMouse.containsMouse
+      text: heroButton.tooltip
+      fontFamily: root.fontFamily
+    }
+  }
+
+  // A limit window: title and share used, a meter with the pace marker, and
+  // what the current pace leaves at the reset.
   component LimitRow: Column {
     id: limitRow
     property var window: null
 
     readonly property bool alarming: window && window.percent >= 0.9
+    readonly property real elapsed: root.windowElapsed(window)
+    readonly property var forecast: root.limitForecast(window)
 
     spacing: Style.space(6)
 
@@ -740,7 +1108,8 @@ Panel {
           : "—"
         color: limitRow.alarming ? root.urgent : root.foreground
         font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
+        font.pixelSize: Style.font.title
+        font.bold: true
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
       }
@@ -750,28 +1119,48 @@ Panel {
       width: parent.width
       value: limitRow.window ? limitRow.window.percent : -1
       alarming: limitRow.alarming
+      pace: limitRow.elapsed
     }
 
-    Text {
-      id: resetText
-      textFormat: Text.PlainText
+    Item {
       width: parent.width
-      text: {
-        var remainingMs = root.resetMsFor(limitRow.window)
-        return remainingMs > 0 ? "Resets in " + root.formatDuration(remainingMs) : ""
+      implicitHeight: resetText.implicitHeight
+
+      Text {
+        id: resetText
+        textFormat: Text.PlainText
+        anchors.left: parent.left
+        text: {
+          var remainingMs = root.resetMsFor(limitRow.window)
+          return remainingMs > 0 ? "Resets in " + root.formatDuration(remainingMs) : ""
+        }
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
       }
-      color: root.dim
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
+
+      Text {
+        anchors.right: parent.right
+        textFormat: Text.PlainText
+        text: limitRow.forecast ? limitRow.forecast.text : ""
+        color: !limitRow.forecast ? root.dim
+          : limitRow.forecast.short ? root.urgent
+          : limitRow.forecast.ahead ? Commons.Color.accent : root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
     }
   }
 
-  // Rounded track showing the percentage of the allowance used.
+  // Rounded track showing the share of the allowance used, with an accent
+  // tick where the window's clock stands: fill past the tick means ahead of
+  // pace.
   component Meter: Item {
     id: meter
     property real value: -1
     property bool alarming: false
-    property real thickness: Math.max(Style.space(4), Math.round(Style.spacing.controlHeight * 0.14))
+    property real pace: -1
+    property real thickness: Math.max(Style.space(5), Math.round(Style.spacing.controlHeight * 0.18))
 
     implicitHeight: thickness
 
@@ -787,105 +1176,92 @@ Panel {
       anchors.verticalCenter: meterTrack.verticalCenter
       height: meterTrack.height
       radius: meterTrack.radius
-      width: meterTrack.width * root.clamp(meter.value, 0, 1)
+      // Fills from empty each time the panel opens, alongside the rail rings.
+      width: root.opened ? meterTrack.width * root.clamp(meter.value, 0, 1) : 0
       color: meter.alarming ? root.urgent : root.foreground
 
       Behavior on width {
-        NumberAnimation { duration: 160; easing.type: Easing.OutCubic }
+        NumberAnimation { duration: 420; easing.type: Easing.OutCubic }
       }
     }
 
+    Rectangle {
+      visible: meter.pace >= 0
+      width: Math.max(2, Math.round(meter.thickness * 0.45))
+      height: meter.thickness * 2.6
+      radius: width / 2
+      anchors.verticalCenter: meterTrack.verticalCenter
+      x: root.clamp(meterTrack.width * root.clamp(meter.pace, 0, 1) - width / 2, 0, meterTrack.width - width)
+      color: Commons.Color.accent
+    }
   }
 
-  // One row per day: label, bar, tokens. Today is picked out in full
-  // foreground so the week reads as a run-up to right now.
-  component DayRow: Item {
-    id: dayRow
+  // One column per day, scaled to the week's busiest; today in the accent.
+  component DayColumn: Item {
+    id: dayColumn
     property var day: null
     property real ratio: 0
     property bool today: false
 
-    implicitHeight: Math.max(dayLabel.implicitHeight, dayValue.implicitHeight) + Style.spacing.sm
-
-    Text {
-      id: dayLabel
-      textFormat: Text.PlainText
-      text: root.dayLabel(dayRow.day ? dayRow.day.date : "", dayRow.today)
-      color: dayRow.today ? root.foreground : root.dim
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-      font.bold: dayRow.today
-      anchors.left: parent.left
-      anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(52)
+    // A hairline floor keeps empty days on the chart; the column only lights
+    // up under the pointer.
+    Rectangle {
+      anchors.fill: parent
+      radius: Style.cornerRadius
+      color: root.alpha(root.foreground, 0.06)
+      opacity: columnHover.containsMouse ? 1 : 0
+      Behavior on opacity { NumberAnimation { duration: 120 } }
     }
 
     Rectangle {
-      id: dayTrack
-      anchors.left: dayLabel.right
-      anchors.right: dayValue.left
-      anchors.leftMargin: Style.space(8)
-      anchors.rightMargin: Style.space(10)
-      anchors.verticalCenter: parent.verticalCenter
-      height: Math.max(Style.space(4), Math.round(Style.spacing.controlHeight * 0.14))
-      radius: height / 2
-      color: root.track
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.bottom: parent.bottom
+      height: 1
+      color: root.alpha(root.foreground, 0.16)
+    }
 
-      Rectangle {
-        anchors.left: parent.left
-        anchors.verticalCenter: parent.verticalCenter
-        height: parent.height
-        radius: parent.radius
-        width: parent.width * root.clamp(dayRow.ratio, 0, 1)
-        color: dayRow.today ? root.foreground : root.alpha(root.foreground, 0.55)
+    Rectangle {
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.bottom: parent.bottom
+      height: dayColumn.ratio > 0 ? Math.max(Style.space(2), parent.height * root.clamp(dayColumn.ratio, 0, 1)) : 0
+      radius: Style.cornerRadius
+      color: dayColumn.today ? Commons.Color.accent : root.alpha(root.foreground, columnHover.containsMouse ? 0.7 : 0.45)
 
-        Behavior on width {
-          NumberAnimation { duration: 160; easing.type: Easing.OutCubic }
-        }
+      Behavior on height {
+        NumberAnimation { duration: 260; easing.type: Easing.OutCubic }
       }
     }
 
-    Text {
-      id: dayValue
-      textFormat: Text.PlainText
-      text: usage.formatTokenCount(dayRow.day ? Number(dayRow.day.messageCount || 0) : 0)
-      color: dayRow.today ? root.foreground : root.dim
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-      font.bold: true
-      horizontalAlignment: Text.AlignRight
-      anchors.right: parent.right
-      anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(52)
-    }
-
     MouseArea {
-      id: dayHover
+      id: columnHover
       anchors.fill: parent
       hoverEnabled: true
       acceptedButtons: Qt.NoButton
     }
 
     PanelToolTip {
-      visible: dayHover.containsMouse
-      text: root.dayTooltip(dayRow.day, dayRow.today)
+      visible: columnHover.containsMouse
+      text: root.dayTooltip(dayColumn.day, dayColumn.today)
       fontFamily: root.fontFamily
     }
   }
 
   // Model rows read as a table: the share bar fills the row behind the label
-  // instead of stacking under it, which keeps the whole dashboard on one screen.
+  // instead of stacking under it. The heaviest model carries the accent.
   component ModelRow: Item {
     id: modelRow
     property var row: null
     property real share: 0
+    property bool lead: false
 
     implicitHeight: modelName.implicitHeight + Style.spacing.lg
 
     Rectangle {
       anchors.fill: parent
       radius: Style.cornerRadius
-      color: root.alpha(root.foreground, 0.05)
+      color: root.alpha(root.foreground, 0.04)
     }
 
     Rectangle {
@@ -894,10 +1270,10 @@ Panel {
       anchors.bottom: parent.bottom
       width: parent.width * root.clamp(modelRow.share, 0, 1)
       radius: Style.cornerRadius
-      color: root.alpha(root.foreground, 0.14)
+      color: modelRow.lead ? root.alpha(Commons.Color.accent, 0.18) : root.alpha(root.foreground, 0.10)
 
       Behavior on width {
-        NumberAnimation { duration: 160; easing.type: Easing.OutCubic }
+        NumberAnimation { duration: 260; easing.type: Easing.OutCubic }
       }
     }
 
@@ -910,7 +1286,7 @@ Panel {
       font.pixelSize: Style.font.bodySmall
       elide: Text.ElideRight
       anchors.left: parent.left
-      anchors.leftMargin: Style.space(8)
+      anchors.leftMargin: Style.space(10)
       anchors.right: modelTokens.left
       anchors.rightMargin: Style.space(8)
       anchors.verticalCenter: parent.verticalCenter
@@ -920,12 +1296,12 @@ Panel {
       id: modelTokens
       textFormat: Text.PlainText
       text: modelRow.row ? usage.formatTokenCount(modelRow.row.total) : ""
-      color: root.dim
+      color: modelRow.lead ? root.foreground : root.dim
       font.family: root.fontFamily
       font.pixelSize: Style.font.bodySmall
       font.bold: true
       anchors.right: parent.right
-      anchors.rightMargin: Style.space(8)
+      anchors.rightMargin: Style.space(10)
       anchors.verticalCenter: parent.verticalCenter
     }
 

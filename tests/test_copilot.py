@@ -104,7 +104,8 @@ class CollectorTests(unittest.TestCase):
     parsed = COLLECTOR.parse_quota_response(payload)
     self.assertEqual(parsed["tierLabel"], "Free")
     self.assertEqual(parsed["limits"], [{
-      "label": "Premium requests",
+      "label": "Premium requests (monthly)",
+      "title": "Premium requests",
       "percent": 0.25,
       "resetsAt": "2030-02-03T00:00:00+00:00",
     }])
@@ -119,7 +120,7 @@ class CollectorTests(unittest.TestCase):
       "quota_snapshots": {"chat": {"unlimited": False, "entitlement": 200, "percent_remaining": 97.5}},
     })
     self.assertEqual(parsed["tierLabel"], "Free")
-    self.assertEqual(parsed["limits"], [{"label": "Chat", "percent": 0.025, "resetsAt": "2030-02-01T00:00:00+00:00"}])
+    self.assertEqual(parsed["limits"], [{"label": "Chat (monthly)", "title": "Chat", "percent": 0.025, "resetsAt": "2030-02-01T00:00:00+00:00"}])
 
   def test_session_without_usage_records_falls_back_to_the_shutdown_snapshot(self):
     stamp = self.now.isoformat()
