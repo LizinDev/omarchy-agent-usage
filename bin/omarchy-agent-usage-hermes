@@ -1,0 +1,260 @@
+#!/usr/bin/python3
+
+"""Hermes Agent usage record for the Omarchy agents panel.
+
+The packaged omarchy-agent-usage-update only runs collectors that live in
+$OMARCHY_PATH/bin, but the panel shows any record that lands in the usage
+directory, so this user-side collector writes hermes.json there itself. The
+omarchy-agent-usage-local.timer user unit runs it every few minutes.
+
+Tokens come from Hermes' own state database. `session_model_usage` holds one
+row per session, model, billing provider and task, auxiliary tasks (title
+generation, background review, compression) included, so it is the source of
+truth; `sessions` totals leave those out and only stand in for a session that
+has no usage rows. No native collector reads Hermes, so every provider counts
+here, Anthropic included: the Claude tab's limits already reflect those calls,
+its token charts do not.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import sqlite3
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+
+AGENT_ID = "hermes"
+AGENT_NAME = "Hermes"
+TOKEN_COLUMNS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
+
+
+def hermes_home() -> Path:
+  return Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
+
+
+def usage_dir() -> Path:
+  state_home = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
+  return state_home / "omarchy" / "agents" / "usage"
+
+
+def number(value: Any) -> int:
+  try:
+    return max(0, round(float(value or 0)))
+  except (TypeError, ValueError):
+    return 0
+
+
+def local_day(seconds: Any) -> str:
+  try:
+    stamp = float(seconds)
+  except (TypeError, ValueError):
+    stamp = 0
+  if stamp <= 0:
+    return dt.date.today().isoformat()
+  return dt.datetime.fromtimestamp(stamp).strftime("%Y-%m-%d")
+
+
+def recent_date_strings() -> list[str]:
+  today = dt.date.today()
+  return [(today - dt.timedelta(days=offset)).isoformat() for offset in range(6, -1, -1)]
+
+
+def empty_bucket() -> dict[str, int]:
+  return {"inputTokens": 0, "outputTokens": 0, "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0}
+
+
+def split(row: tuple) -> tuple[int, int, int, int]:
+  """(input, output, cache read, cache write); reasoning is generated output."""
+  t_in, t_out, t_read, t_write, t_reason = (number(value) for value in row)
+  return t_in, t_out + t_reason, t_read, t_write
+
+
+def provider_label(provider: str) -> str:
+  return {"nous": "Nous", "openai-codex": "OpenAI Codex", "openrouter": "OpenRouter"}.get(provider, provider.capitalize())
+
+
+# ------------------------------------------------------------------- stats
+
+
+def scan_state(db: Path) -> dict[str, Any]:
+  today = dt.date.today().isoformat()
+  recent_dates = recent_date_strings()
+  recent = {day: {"date": day, "messageCount": 0} for day in recent_dates}
+  month_cutoff = time.time() - 30 * 86400
+
+  # Read-only: Hermes may be writing right now. A database error raises to
+  # the caller, which keeps the last good record instead of blanking the tab.
+  conn = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True, timeout=2)
+  steps: list[tuple[str, str, str, tuple[int, int, int, int], float]] = []
+  costs: list[tuple[float, float]] = []
+  prompt_days: list[str] = []
+  try:
+    conn.execute("PRAGMA query_only = ON")
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    columns = ", ".join(TOKEN_COLUMNS)
+
+    covered: set[str] = set()
+    if "session_model_usage" in tables:
+      for sid, model, provider, first, last, actual, *tokens in conn.execute(
+        f"SELECT session_id, model, billing_provider, first_seen, last_seen, actual_cost_usd,"
+        f" {columns} FROM session_model_usage"
+      ):
+        covered.add(str(sid))
+        at = last or first
+        steps.append((str(sid), str(model or ""), str(provider or ""), split(tokens), at))
+        costs.append((float(actual or 0), float(at or 0)))
+
+    subagent_sessions: set[str] = set()
+    for sid, model, provider, source, started, ended, actual, *tokens in conn.execute(
+      f"SELECT id, model, billing_provider, source, started_at, ended_at, actual_cost_usd,"
+      f" {columns} FROM sessions"
+    ):
+      sid = str(sid)
+      if source == "subagent":
+        subagent_sessions.add(sid)
+      if sid in covered:
+        continue
+      parts = split(tokens)
+      if any(parts):
+        at = ended or started
+        steps.append((sid, str(model or ""), str(provider or ""), parts, at))
+        costs.append((float(actual or 0), float(at or 0)))
+
+    if "messages" in tables:
+      # Counts only: message text never leaves the database. A subagent's
+      # "user" turns are written by its parent agent, not typed by anyone.
+      for sid, stamp in conn.execute("SELECT session_id, timestamp FROM messages WHERE role = 'user'"):
+        if str(sid) not in subagent_sessions:
+          prompt_days.append(local_day(stamp))
+  finally:
+    conn.close()
+
+  # One model on two billing providers would merge two different bills.
+  providers_by_model: dict[str, set[str]] = {}
+  for _, model, provider, parts, _ in steps:
+    if any(parts):
+      providers_by_model.setdefault(model, set()).add(provider)
+
+  # "poolside/laguna-s-2.1:free" reads as "laguna-s-2.1:free", as on the
+  # other tabs, unless that would merge two models.
+  short = {model: model.rstrip("/").split("/")[-1] for model in providers_by_model}
+  clashes = {name for name in short.values() if list(short.values()).count(name) > 1}
+
+  sessions: set[str] = set()
+  active_days: set[str] = set()
+  today_sessions: set[str] = set()
+  today_tokens: dict[str, int] = {}
+  usage_by_model: dict[str, dict[str, int]] = {}
+  provider_tokens: dict[str, int] = {}
+  today_total = 0
+  for sid, model, provider, parts, at in steps:
+    total = sum(parts)
+    if total <= 0:
+      continue
+    name = (model if short.get(model) in clashes else short.get(model)) or provider or "unknown"
+    if len(providers_by_model.get(model, ())) > 1:
+      name = f"{name} · {provider or 'unknown'}"
+    day = local_day(at)
+    sessions.add(sid)
+    active_days.add(day)
+
+    bucket = usage_by_model.setdefault(name, empty_bucket())
+    for key, value in zip(("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"), parts):
+      bucket[key] += value
+
+    if float(at or 0) > month_cutoff and provider:
+      provider_tokens[provider] = provider_tokens.get(provider, 0) + total
+    if day in recent:
+      recent[day]["messageCount"] += total
+    if day == today:
+      today_sessions.add(sid)
+      today_total += total
+      today_tokens[name] = today_tokens.get(name, 0) + total
+
+  return {
+    "hasLocalStats": bool(sessions),
+    "hasPromptStats": "messages" in tables,
+    "todayPrompts": sum(day == today for day in prompt_days),
+    "todaySessions": len(today_sessions),
+    "todayTotalTokens": today_total,
+    "todayTokensByModel": today_tokens,
+    "recentDays": [recent[day] for day in recent_dates],
+    "modelUsage": usage_by_model,
+    "totalPrompts": len(prompt_days),
+    "totalSessions": len(sessions),
+    "activeDays": len(active_days),
+    "activeDates": sorted(active_days),
+    "providers30d": sorted(provider_tokens, key=lambda name: -provider_tokens[name]),
+    "monthCost": round(sum(cost for cost, at in costs if at > month_cutoff), 2),
+  }
+
+
+# -------------------------------------------------------------------- main
+
+
+def build_record() -> dict[str, Any]:
+  db = hermes_home() / "state.db"
+  stats = scan_state(db) if db.is_file() else {"hasLocalStats": False, "hasPromptStats": False}
+  providers = stats.pop("providers30d", [])
+  month_cost = stats.pop("monthCost", 0)
+
+  tier = " · ".join(provider_label(name) for name in providers)
+  if month_cost > 0:
+    tier = (tier + " · " if tier else "") + f"${month_cost:.2f} / 30d"
+
+  return {
+    "schemaVersion": 1,
+    "id": AGENT_ID,
+    "name": AGENT_NAME,
+    "updatedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+    "ready": db.is_file(),
+    "tierLabel": tier,
+    "usageStatusText": "",
+    "authHelpText": "",
+    "limits": [],
+    **stats,
+  }
+
+
+def write_record(record: dict[str, Any]) -> None:
+  target_dir = usage_dir()
+  target_dir.mkdir(parents=True, exist_ok=True)
+  fd, tmp = tempfile.mkstemp(prefix=f".{AGENT_ID}.", dir=target_dir)
+  try:
+    with os.fdopen(fd, "w") as handle:
+      handle.write(json.dumps(record) + "\n")
+    os.replace(tmp, target_dir / f"{AGENT_ID}.json")
+  except BaseException:
+    Path(tmp).unlink(missing_ok=True)
+    raise
+
+
+def main() -> int:
+  parser = argparse.ArgumentParser(description="Write the Hermes usage record for the Omarchy agents panel")
+  parser.add_argument("--print", "--stdout", dest="print", action="store_true", help="print the record instead of writing it")
+  # Accepted for parity with the packaged collectors; every run is a full scan.
+  parser.add_argument("--force", action="store_true", help=argparse.SUPPRESS)
+  parser.add_argument("--limits-only", action="store_true", help=argparse.SUPPRESS)
+  args = parser.parse_args()
+
+  try:
+    record = build_record()
+  except sqlite3.Error as error:
+    print(f"omarchy-agent-usage-hermes: Hermes database unavailable: {error}", file=sys.stderr)
+    return 1
+
+  if args.print:
+    print(json.dumps(record, indent=2))
+  else:
+    write_record(record)
+  return 0
+
+
+if __name__ == "__main__":
+  sys.exit(main())

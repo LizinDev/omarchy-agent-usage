@@ -1,0 +1,375 @@
+#!/usr/bin/python3
+# omarchy:summary=Collect GitHub Copilot CLI usage
+# omarchy:args=[--stdout]
+# omarchy:hidden=true
+"""Collect Copilot CLI usage into one display-ready JSON record."""
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import urllib.request
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+AGENT_ID = "copilot"
+AGENT_NAME = "Copilot"
+QUOTA_URL = "https://api.github.com/copilot_internal/user"
+LIMIT_LABELS = {
+  "premium_interactions": "Premium requests",
+  "chat": "Chat",
+  "completions": "Completions",
+}
+
+
+class SourceReadError(Exception):
+  pass
+
+
+def number(value):
+  try:
+    return int(value or 0)
+  except (TypeError, ValueError):
+    return 0
+
+
+def decimal_number(value):
+  try:
+    return float(value or 0)
+  except (TypeError, ValueError):
+    return 0.0
+
+
+def local_day(value, fallback):
+  try:
+    if isinstance(value, (int, float)):
+      stamp = value / 1000 if value > 10_000_000_000 else value
+      return datetime.fromtimestamp(stamp).astimezone().strftime("%Y-%m-%d")
+    text = str(value)
+    parsed = datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
+    if parsed.tzinfo is not None:
+      parsed = parsed.astimezone()
+    return parsed.strftime("%Y-%m-%d")
+  except Exception:
+    return fallback
+
+
+def event_time(value):
+  try:
+    if isinstance(value, (int, float)):
+      stamp = value / 1000 if value > 10_000_000_000 else value
+      return datetime.fromtimestamp(stamp, timezone.utc)
+    text = str(value)
+    parsed = datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
+    if parsed.tzinfo is None:
+      parsed = parsed.astimezone()
+    return parsed.astimezone(timezone.utc)
+  except Exception:
+    return None
+
+
+def model_names(raw_names):
+  candidates = {}
+  counts = defaultdict(int)
+  for raw in raw_names:
+    candidate = raw.split("/", 1)[1] if "/" in raw else raw
+    candidates[raw] = candidate
+    counts[candidate] += 1
+  return {raw: candidate if counts[candidate] == 1 else raw for raw, candidate in candidates.items()}
+
+
+def empty_bucket():
+  return {
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "cacheReadInputTokens": 0,
+    "cacheCreationInputTokens": 0,
+  }
+
+
+def session_files(root):
+  try:
+    entries = list(os.scandir(root))
+  except OSError as exc:
+    raise SourceReadError(f"cannot read Copilot session directory: {exc.strerror or exc}") from exc
+  files = []
+  for entry in entries:
+    try:
+      if not entry.is_dir(follow_symlinks=False):
+        continue
+      path = Path(entry.path) / "events.jsonl"
+      if path.is_file():
+        files.append(path)
+    except OSError as exc:
+      raise SourceReadError(f"cannot inspect Copilot session directory: {exc.strerror or exc}") from exc
+  return files
+
+
+def collect_local(root, now=None):
+  now = now or datetime.now().astimezone()
+  today = now.strftime("%Y-%m-%d")
+  recent_dates = [(now - timedelta(days=offset)).strftime("%Y-%m-%d") for offset in range(6, -1, -1)]
+  recent = {day: 0 for day in recent_dates}
+  usage_rows = []
+  prompt_days = []
+  session_days = defaultdict(set)
+  premium_requests = 0.0
+  cutoff = now.astimezone(timezone.utc) - timedelta(days=30)
+
+  for path in session_files(root):
+    has_tokens = False
+    last_shutdown = None
+    last_premium = None
+    try:
+      handle = path.open(encoding="utf-8", errors="replace")
+    except OSError as exc:
+      raise SourceReadError(f"cannot read Copilot events file: {exc.strerror or exc}") from exc
+    try:
+      with handle:
+        for raw in handle:
+          try:
+            event = json.loads(raw)
+          except (TypeError, ValueError):
+            continue
+          if not isinstance(event, dict):
+            continue
+          kind = event.get("type")
+          day = local_day(event.get("timestamp"), today)
+          if kind == "user.message":
+            # A subagent's opening turn is written by the parent agent.
+            if not event.get("agentId") and not (event.get("data") or {}).get("parentToolCallId"):
+              prompt_days.append(day)
+            continue
+          if kind in ("session.shutdown", "session.usage_checkpoint"):
+            # Premium requests are billed per user request, not per API call:
+            # every usage record carries the request's multiplier, so only the
+            # session's own accounting adds up to what the quota counts.
+            data = event.get("data") if isinstance(event.get("data"), dict) else {}
+            snapshot = data.get("accountingSnapshot") if isinstance(data.get("accountingSnapshot"), dict) else {}
+            premium = snapshot.get("totalPremiumRequestCost", data.get("totalPremiumRequests"))
+            if premium is not None:
+              last_premium = (decimal_number(premium), event_time(event.get("timestamp")))
+            if kind == "session.shutdown":
+              last_shutdown = event
+            continue
+          if kind != "session.usage_record":
+            continue
+          data = event.get("data") or {}
+          if not isinstance(data, dict):
+            continue
+          usage = data.get("usage") or {}
+          if not isinstance(usage, dict):
+            continue
+          cache_read = number(usage.get("cacheReadTokens"))
+          cache_write = number(usage.get("cacheWriteTokens"))
+          # Copilot's inputTokens includes both cache categories. Its
+          # outputTokens likewise already includes reasoningTokens.
+          input_tokens = max(0, number(usage.get("inputTokens")) - cache_read - cache_write)
+          output_tokens = number(usage.get("outputTokens"))
+          total = input_tokens + output_tokens + cache_read + cache_write
+          if not total:
+            continue
+          model = str(usage.get("model") or "copilot")
+          usage_rows.append((day, str(path.parent), model, input_tokens, output_tokens, cache_read, cache_write))
+          has_tokens = True
+    except OSError as exc:
+      raise SourceReadError(f"cannot read Copilot events file: {exc.strerror or exc}") from exc
+    if not has_tokens and last_shutdown is not None:
+      # CLIs before session.usage_record (<= 1.0.86 here) leave only the
+      # shutdown snapshot: per-model totals, with the same conventions as the
+      # per-call records, dated when the session ended. A resumed session's
+      # later snapshot is assumed cumulative.
+      data = last_shutdown.get("data") or {}
+      metrics = data.get("modelMetrics") if isinstance(data, dict) else None
+      day = local_day(last_shutdown.get("timestamp"), today)
+      stamp = event_time(last_shutdown.get("timestamp"))
+      for model, metric in (metrics or {}).items():
+        usage = metric.get("usage") if isinstance(metric, dict) else None
+        if not isinstance(usage, dict):
+          continue
+        cache_read = number(usage.get("cacheReadTokens"))
+        cache_write = number(usage.get("cacheWriteTokens"))
+        input_tokens = max(0, number(usage.get("inputTokens")) - cache_read - cache_write)
+        output_tokens = number(usage.get("outputTokens"))
+        if not input_tokens + output_tokens + cache_read + cache_write:
+          continue
+        usage_rows.append((day, str(path.parent), str(model), input_tokens, output_tokens, cache_read, cache_write))
+        has_tokens = True
+    if has_tokens:
+      session_days[str(path.parent)]
+    if last_premium is not None and last_premium[1] is not None and last_premium[1] >= cutoff:
+      premium_requests += last_premium[0]
+
+  names = model_names({row[2] for row in usage_rows})
+  model_usage = {}
+  today_by_model = {}
+  active_dates = set()
+  for day, session, raw_model, input_tokens, output_tokens, cache_read, cache_write in usage_rows:
+    model = names[raw_model]
+    bucket = model_usage.setdefault(model, empty_bucket())
+    bucket["inputTokens"] += input_tokens
+    bucket["outputTokens"] += output_tokens
+    bucket["cacheReadInputTokens"] += cache_read
+    bucket["cacheCreationInputTokens"] += cache_write
+    total = input_tokens + output_tokens + cache_read + cache_write
+    active_dates.add(day)
+    session_days[session].add(day)
+    if day in recent:
+      recent[day] += total
+    if day == today:
+      today_by_model[model] = today_by_model.get(model, 0) + total
+
+  result = {
+    "todayPrompts": sum(day == today for day in prompt_days),
+    "todaySessions": sum(today in days for days in session_days.values()),
+    "todayTotalTokens": sum(today_by_model.values()),
+    "todayTokensByModel": today_by_model,
+    "recentDays": [{"date": day, "messageCount": recent[day]} for day in recent_dates],
+    "modelUsage": model_usage,
+    "totalPrompts": len(prompt_days),
+    "totalSessions": len(session_days),
+    "activeDays": len(active_dates),
+    "activeDates": sorted(active_dates),
+    "premiumRequests30d": premium_requests,
+  }
+  return result
+
+
+def utc_iso(value):
+  if not value:
+    return None
+  try:
+    text = str(value)
+    parsed = datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
+    if parsed.tzinfo is None:
+      parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
+  except Exception:
+    return None
+
+
+def parse_quota_response(payload):
+  result = {"tierLabel": "", "limits": [], "usageStatusText": "", "authHelpText": ""}
+  if not isinstance(payload, dict):
+    raise ValueError("invalid quota response")
+  sku = str(payload.get("access_type_sku") or "")
+  plan = str(payload.get("copilot_plan") or "")
+  result["tierLabel"] = "Free" if sku.startswith("free") else (plan.capitalize() or sku)
+  snapshots = payload.get("quota_snapshots") or {}
+  if not isinstance(snapshots, dict):
+    snapshots = {}
+  for key, label in LIMIT_LABELS.items():
+    snapshot = snapshots.get(key)
+    if not isinstance(snapshot, dict):
+      continue
+    if snapshot.get("unlimited") or decimal_number(snapshot.get("entitlement")) <= 0:
+      continue
+    remaining = snapshot.get("percent_remaining")
+    if remaining is None:
+      continue
+    try:
+      # The panel reads a 0-1 fraction, like the native collectors.
+      percent = round(min(max((100.0 - float(remaining)) / 100, 0.0), 1.0), 4)
+    except (TypeError, ValueError):
+      continue
+    result["limits"].append({
+      "label": label,
+      "percent": percent,
+      "resetsAt": utc_iso(payload.get("quota_reset_date_utc") or payload.get("quota_reset_date")),
+    })
+  return result
+
+
+def find_command(name):
+  return shutil.which(name, path=os.environ.get("PATH"))
+
+
+def fetch_quota():
+  empty = {"tierLabel": "", "limits": [], "usageStatusText": "", "authHelpText": ""}
+  gh = find_command("gh")
+  if not gh:
+    empty["usageStatusText"] = "Copilot limits unavailable: gh not found"
+    return empty
+  try:
+    token = subprocess.run(
+      [gh, "auth", "token"], capture_output=True, text=True, timeout=5, check=True,
+    ).stdout.strip()
+    if not token:
+      raise RuntimeError("GitHub authentication missing")
+    request = urllib.request.Request(
+      QUOTA_URL,
+      headers={"Authorization": f"token {token}", "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=8) as response:
+      payload = json.load(response)
+    return parse_quota_response(payload)
+  except Exception as exc:
+    reason = str(exc).splitlines()[0][:100] or exc.__class__.__name__
+    empty["usageStatusText"] = f"Copilot limits unavailable: {reason}"
+    return empty
+
+
+def output_path():
+  state = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
+  return state / "omarchy" / "agents" / "usage" / "copilot.json"
+
+
+def write_record(path, record):
+  path.parent.mkdir(parents=True, exist_ok=True)
+  fd, name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+  tmp = Path(name)
+  try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+      handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+    os.replace(tmp, path)
+  except BaseException:
+    tmp.unlink(missing_ok=True)
+    raise
+
+
+def build_record(root, now=None):
+  stats = collect_local(root, now=now)
+  quota = fetch_quota()
+  record = {
+    "schemaVersion": 1,
+    "id": AGENT_ID,
+    "name": AGENT_NAME,
+    "updatedAt": datetime.now(timezone.utc).isoformat(),
+    "ready": True,
+    "hasLocalStats": bool(stats.get("totalSessions")),
+    "hasPromptStats": True,
+  }
+  record.update(stats)
+  record.update(quota)
+  return record
+
+
+def main():
+  parser = argparse.ArgumentParser()
+  parser.add_argument("--stdout", "--print", dest="stdout", action="store_true")
+  # Accepted for parity with the packaged collectors; every run is a full scan.
+  parser.add_argument("--force", action="store_true", help=argparse.SUPPRESS)
+  parser.add_argument("--limits-only", action="store_true", help=argparse.SUPPRESS)
+  args = parser.parse_args()
+  copilot_home = Path(os.environ.get("COPILOT_HOME") or (Path.home() / ".copilot"))
+  try:
+    record = build_record(copilot_home / "session-state")
+    if args.stdout:
+      print(json.dumps(record, separators=(",", ":")))
+    else:
+      write_record(output_path(), record)
+  except SourceReadError as exc:
+    print(f"omarchy-agent-usage-copilot: {exc}", file=sys.stderr)
+    return 1
+  except Exception as exc:
+    print(f"omarchy-agent-usage-copilot: {exc}", file=sys.stderr)
+    return 1
+  return 0
+
+
+if __name__ == "__main__":
+  raise SystemExit(main())

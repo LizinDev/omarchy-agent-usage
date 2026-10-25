@@ -1,0 +1,409 @@
+#!/usr/bin/python3
+
+"""OpenCode usage record for the Omarchy agents panel.
+
+The packaged omarchy-agent-usage-update only runs collectors that live in
+$OMARCHY_PATH/bin, but the panel shows any record that lands in the usage
+directory — so this user-side collector writes opencode.json there itself.
+The omarchy-agent-usage-opencode.timer user unit runs it every few minutes.
+
+Local stats come from opencode's own database: the 2.x `session_message` and
+`session_v2` tables, and the 1.x `message` table for sessions 2.x has not
+migrated. Messages on the anthropic and openai providers are left out because
+the native claude and codex collectors count them in their tabs (as long as
+those only read the 1.x table, 2.x sessions on those providers count here,
+under a provider-qualified model name), and fireworks-ai because the Fireworks
+tab reads that account's billing API. OpenCode Go plan limits come from the Go
+usage endpoint when opencode holds a Go key.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import sqlite3
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+AGENT_ID = "opencode"
+AGENT_NAME = "OpenCode"
+GO_USAGE_URL = "https://opencode.ai/zen/go/v1/usage"
+GO_MAX_BYTES = 262144
+EXCLUDED_PROVIDERS = {"anthropic", "openai", "fireworks-ai"}
+GO_WINDOWS = (
+  ("rolling", "Session (5-hour)"),
+  ("weekly", "Weekly (7-day)"),
+  ("monthly", "Monthly (30-day)"),
+)
+
+
+def data_home() -> Path:
+  return Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share"))
+
+
+def usage_dir() -> Path:
+  state_home = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
+  return state_home / "omarchy" / "agents" / "usage"
+
+
+def number(value: Any) -> int:
+  try:
+    return max(0, round(float(value or 0)))
+  except (TypeError, ValueError):
+    return 0
+
+
+def local_day(ms: Any) -> str:
+  created = number(ms)
+  if created <= 0:
+    return dt.date.today().isoformat()
+  return dt.datetime.fromtimestamp(created / 1000).strftime("%Y-%m-%d")
+
+
+def recent_date_strings() -> list[str]:
+  today = dt.date.today()
+  return [(today - dt.timedelta(days=offset)).isoformat() for offset in range(6, -1, -1)]
+
+
+def empty_bucket() -> dict[str, int]:
+  return {"inputTokens": 0, "outputTokens": 0, "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0}
+
+
+# ------------------------------------------------------------------- stats
+
+
+def natives_read_v2() -> bool:
+  """True once the packaged claude/codex collectors read opencode's 2.x tables.
+
+  Until then they only see the legacy `message` table, so a 2.x session on an
+  anthropic or openai provider is counted nowhere unless this tab counts it.
+  """
+  omarchy = Path(os.environ.get("OMARCHY_PATH") or "/usr/share/omarchy") / "bin"
+  for name in ("omarchy-agent-usage-claude", "omarchy-agent-usage-codex"):
+    try:
+      if "session_message" in (omarchy / name).read_text(errors="replace"):
+        return True
+    except OSError:
+      continue
+  return False
+
+
+def model_ref(raw: Any) -> tuple[str, str]:
+  """(providerID, modelID) from a 2.x model column or message field."""
+  if isinstance(raw, str):
+    try:
+      raw = json.loads(raw)
+    except json.JSONDecodeError:
+      return "", raw
+  if not isinstance(raw, dict):
+    return "", ""
+  return str(raw.get("providerID") or ""), str(raw.get("id") or raw.get("modelID") or "")
+
+
+def token_split(tokens: Any) -> tuple[int, int, int, int]:
+  tokens = tokens if isinstance(tokens, dict) else {}
+  cache = tokens.get("cache") if isinstance(tokens.get("cache"), dict) else {}
+  # opencode keeps thinking tokens out of output; both are generated.
+  return (
+    number(tokens.get("input")),
+    number(tokens.get("output")) + number(tokens.get("reasoning")),
+    number(cache.get("read")),
+    number(cache.get("write")),
+  )
+
+
+def table_names(conn: sqlite3.Connection) -> set[str]:
+  return {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+
+
+def collect_v2(conn: sqlite3.Connection, steps: list, prompts: list) -> set[str]:
+  """opencode >= 2: one `session_message` row per turn, totals in `session_v2`.
+
+  A session's totals also include calls that leave no message row (the title
+  request, for one), so whatever the turns do not account for is added as one
+  more step on the session's own model, dated at its last update.
+  """
+  seen: set[str] = set()
+  sessions = {}
+  for sid, model, t_in, t_out, t_reason, t_read, t_write, cost, created, updated in conn.execute(
+    "SELECT id, model, tokens_input, tokens_output, tokens_reasoning, tokens_cache_read,"
+    " tokens_cache_write, cost, time_created, time_updated FROM session_v2"
+  ):
+    sessions[str(sid)] = {
+      "model": model_ref(model),
+      "totals": (number(t_in), number(t_out) + number(t_reason), number(t_read), number(t_write)),
+      "cost": float(cost or 0),
+      "at": updated or created,
+    }
+
+  sums: dict[str, list[int]] = {}
+  costs: dict[str, float] = {}
+  for sid, kind, created, raw in conn.execute(
+    "SELECT session_id, type, time_created, data FROM session_message WHERE type IN ('user', 'assistant')"
+  ):
+    sid = str(sid)
+    seen.add(sid)
+    try:
+      entry = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+      continue
+    if not isinstance(entry, dict):
+      continue
+    at = (entry.get("time") or {}).get("created") or created
+    if kind == "user":
+      prompts.append((sid, sessions.get(sid, {}).get("model", ("", ""))[0], at))
+      continue
+    provider, model = model_ref(entry.get("model"))
+    split = token_split(entry.get("tokens"))
+    steps.append((sid, provider, model, split, float(entry.get("cost") or 0), at))
+    total = sums.setdefault(sid, [0, 0, 0, 0])
+    for i, value in enumerate(split):
+      total[i] += value
+    costs[sid] = costs.get(sid, 0.0) + float(entry.get("cost") or 0)
+
+  for sid, info in sessions.items():
+    if sid not in seen:
+      continue
+    counted = sums.get(sid, [0, 0, 0, 0])
+    rest = tuple(max(0, whole - part) for whole, part in zip(info["totals"], counted))
+    if any(rest):
+      provider, model = info["model"]
+      steps.append((sid, provider, model, rest, max(0.0, info["cost"] - costs.get(sid, 0.0)), info["at"]))
+  return seen
+
+
+def collect_v1(conn: sqlite3.Connection, steps: list, prompts: list, skip: set[str]) -> None:
+  """opencode 1.x `message` rows, for sessions 2.x has not migrated."""
+  for sid, created, raw in conn.execute("SELECT session_id, time_created, data FROM message"):
+    sid = str(sid)
+    if sid in skip:
+      continue
+    try:
+      entry = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+      continue
+    if not isinstance(entry, dict):
+      continue
+    at = (entry.get("time") or {}).get("created") or created
+    role = entry.get("role")
+    if role == "user":
+      prompts.append((sid, str((entry.get("model") or {}).get("providerID") or ""), at))
+    elif role == "assistant":
+      provider = str(entry.get("providerID") or "")
+      steps.append((sid, provider, str(entry.get("modelID") or ""), token_split(entry.get("tokens")),
+                    float(entry.get("cost") or 0), at))
+
+
+def scan_messages(db: Path) -> dict[str, Any]:
+  today = dt.date.today().isoformat()
+  recent_dates = recent_date_strings()
+  recent = {day: {"date": day, "messageCount": 0} for day in recent_dates}
+  sessions: set[str] = set()
+  active_days: set[str] = set()
+  today_sessions: set[str] = set()
+  today_tokens: dict[str, int] = {}
+  usage_by_model: dict[str, dict[str, int]] = {}
+  prompts = today_prompts = today_total = 0
+  month_cost = 0.0
+  month_cutoff_ms = (time.time() - 30 * 86400) * 1000
+
+  # Read-only: opencode may be writing right now. A database error raises to
+  # the caller, which keeps the last good record instead of blanking the tab.
+  conn = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True, timeout=2)
+  steps: list = []
+  prompt_rows: list = []
+  try:
+    conn.execute("PRAGMA query_only = ON")
+    tables = table_names(conn)
+    v2 = collect_v2(conn, steps, prompt_rows) if {"session_v2", "session_message"} <= tables else set()
+    v1_only = set()
+    if "message" in tables:
+      before = len(steps)
+      collect_v1(conn, steps, prompt_rows, v2)
+      v1_only = {step[0] for step in steps[before:]}
+  finally:
+    conn.close()
+
+  # Sessions the packaged collectors cannot see still count here, under a
+  # provider-qualified name so they never pass for this tab's own models.
+  natives_blind = not natives_read_v2()
+
+  def counted(sid: str, provider: str) -> bool:
+    if not provider:
+      return False
+    if provider not in EXCLUDED_PROVIDERS:
+      return True
+    return provider != "fireworks-ai" and natives_blind and sid in v2 and sid not in v1_only
+
+  for sid, provider, at in prompt_rows:
+    if counted(sid, provider):
+      prompts += 1
+      if local_day(at) == today:
+        today_prompts += 1
+
+  for sid, provider, model, split, cost, at in steps:
+    if not counted(sid, provider):
+      continue
+    input_tokens, output_tokens, cache_read, cache_write = split
+    total = input_tokens + output_tokens + cache_read + cache_write
+    if total <= 0:
+      continue
+    day = local_day(at)
+    name = (model or provider).rstrip("/").split("/")[-1]
+    if provider in EXCLUDED_PROVIDERS:
+      name = f"{name} · {provider}"
+    if number(at) > month_cutoff_ms:
+      month_cost += cost
+
+    sessions.add(sid)
+    active_days.add(day)
+    bucket = usage_by_model.setdefault(name, empty_bucket())
+    bucket["inputTokens"] += input_tokens
+    bucket["outputTokens"] += output_tokens
+    bucket["cacheReadInputTokens"] += cache_read
+    bucket["cacheCreationInputTokens"] += cache_write
+
+    if day in recent:
+      recent[day]["messageCount"] += total
+    if day == today:
+      today_sessions.add(sid)
+      today_total += total
+      today_tokens[name] = today_tokens.get(name, 0) + total
+
+  return {
+    "hasLocalStats": bool(sessions),
+    "hasPromptStats": prompts > 0,
+    "todayPrompts": today_prompts,
+    "todaySessions": len(today_sessions),
+    "todayTotalTokens": today_total,
+    "todayTokensByModel": today_tokens,
+    "recentDays": [recent[day] for day in recent_dates],
+    "modelUsage": usage_by_model,
+    "totalPrompts": prompts,
+    "totalSessions": len(sessions),
+    "activeDays": len(active_days),
+    "activeDates": sorted(active_days),
+    "monthCost": round(month_cost, 2),
+  }
+
+
+# ------------------------------------------------------------------ limits
+
+
+def go_key() -> str:
+  try:
+    parsed = json.loads((data_home() / "opencode" / "auth.json").read_text())
+  except (OSError, json.JSONDecodeError):
+    return ""
+  entry = parsed.get("opencode-go") if isinstance(parsed, dict) else None
+  return str(entry.get("key") or "").strip() if isinstance(entry, dict) else ""
+
+
+def go_limits(key: str) -> tuple[list[dict[str, Any]], str]:
+  request = urllib.request.Request(
+    GO_USAGE_URL,
+    headers={"Authorization": f"Bearer {key}", "Accept": "application/json", "User-Agent": "omarchy-agent-usage-opencode"},
+  )
+  try:
+    with urllib.request.urlopen(request, timeout=10) as response:
+      body = response.read(GO_MAX_BYTES + 1)
+    if len(body) > GO_MAX_BYTES:
+      return [], "OpenCode Go usage response too large"
+    payload = json.loads(body)
+  except urllib.error.HTTPError as error:
+    return [], f"OpenCode Go usage returned HTTP {error.code}"
+  except (urllib.error.URLError, OSError, ValueError):
+    return [], "OpenCode Go usage unavailable"
+
+  usage = payload.get("usage") if isinstance(payload, dict) else None
+  limits = []
+  for window_key, label in GO_WINDOWS:
+    window = usage.get(window_key) if isinstance(usage, dict) else None
+    if not isinstance(window, dict):
+      continue
+    try:
+      percent = float(window.get("percent", window.get("usagePercent")))
+    except (TypeError, ValueError):
+      continue
+    limits.append({
+      "label": label,
+      "percent": round(min(max(percent / 100, 0.0), 1.0), 4),
+      "resetsAt": str(window.get("resetsAt") or ""),
+    })
+  if not limits:
+    return [], "OpenCode Go usage returned no windows"
+  return limits, ""
+
+
+# -------------------------------------------------------------------- main
+
+
+def build_record() -> dict[str, Any]:
+  db = data_home() / "opencode" / "opencode.db"
+  stats = scan_messages(db) if db.is_file() else {"hasLocalStats": False, "hasPromptStats": False}
+  month_cost = stats.pop("monthCost", 0)
+
+  key = go_key()
+  limits, status = go_limits(key) if key else ([], "")
+
+  tier = "Go" if key else "Zen"
+  if month_cost > 0:
+    tier += f" · ${month_cost:.2f} / 30d"
+
+  return {
+    "schemaVersion": 1,
+    "id": AGENT_ID,
+    "name": AGENT_NAME,
+    "updatedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+    "ready": db.is_file(),
+    "tierLabel": tier,
+    "usageStatusText": status,
+    "authHelpText": "Run `opencode auth login` and sign in to OpenCode Go." if status else "",
+    "limits": limits,
+    **stats,
+  }
+
+
+def write_record(record: dict[str, Any]) -> None:
+  target_dir = usage_dir()
+  target_dir.mkdir(parents=True, exist_ok=True)
+  fd, tmp = tempfile.mkstemp(prefix=f".{AGENT_ID}.", dir=target_dir)
+  try:
+    with os.fdopen(fd, "w") as handle:
+      handle.write(json.dumps(record) + "\n")
+    os.replace(tmp, target_dir / f"{AGENT_ID}.json")
+  except BaseException:
+    Path(tmp).unlink(missing_ok=True)
+    raise
+
+
+def main() -> int:
+  parser = argparse.ArgumentParser(description="Write the OpenCode usage record for the Omarchy agents panel")
+  parser.add_argument("--print", action="store_true", help="print the record instead of writing it")
+  # Accepted for parity with the packaged collectors; every run is a full scan.
+  parser.add_argument("--force", action="store_true", help=argparse.SUPPRESS)
+  parser.add_argument("--limits-only", action="store_true", help=argparse.SUPPRESS)
+  args = parser.parse_args()
+
+  try:
+    record = build_record()
+  except sqlite3.Error as error:
+    print(f"omarchy-agent-usage-opencode: opencode database unavailable: {error}", file=sys.stderr)
+    return 1
+
+  if args.print:
+    print(json.dumps(record, indent=2))
+  else:
+    write_record(record)
+  return 0
+
+
+if __name__ == "__main__":
+  sys.exit(main())
