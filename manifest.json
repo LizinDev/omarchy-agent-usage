@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.lizindev.agent-usage",
+  "name": "Agent Usage",
+  "version": "0.1.0",
+  "author": "LizinDev",
+  "license": "MIT",
+  "description": "Usage, limits and pace for every AI coding agent on the machine — Claude Code, Codex, Fireworks, OpenCode, Copilot and Hermes — in one bar panel.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Agent Usage",
+    "description": "One bar icon and one panel: rate-limit meters with pace, today, the last week and the all-time model breakdown for every agent, including the OpenCode, Copilot and Hermes collectors this plugin bundles.",
+    "category": "AI",
+    "aliases": ["agent-usage", "ai-usage"],
+    "allowMultiple": false,
+    "defaults": {
+      "providers": {
+        "claude": { "enabled": true },
+        "codex": { "enabled": true },
+        "fireworks": { "enabled": true },
+        "opencode": { "enabled": true },
+        "copilot": { "enabled": true },
+        "hermes": { "enabled": true }
+      },
+      "refreshIntervalSec": 900,
+      "syncMode": "Off",
+      "syncDir": "",
+      "syncFileName": "",
+      "syncDeviceId": ""
+    },
+    "schema": [
+      {"key": "refreshIntervalSec", "type": "integer", "label": "Refresh interval (seconds)", "min": 30, "max": 3600, "step": 30, "defaultValue": 900},
+      {"key": "syncMode", "type": "enum", "label": "Synced aggregation", "options": ["Off", "On"], "defaultValue": "Off", "description": "When On, write this machine's local usage snapshot and merge snapshots from other machines."},
+      {"key": "syncDir", "type": "path", "label": "Sync folder", "defaultValue": "", "description": "A folder synced by Syncthing, Dropbox, rsync, etc."},
+      {"key": "syncFileName", "type": "string", "label": "Snapshot file name", "defaultValue": "", "description": "Optional. Defaults to <hostname>.json. Use a different file name on each machine, such as laptop.json or desktop.json."},
+      {"key": "syncDeviceId", "type": "string", "label": "Device id", "defaultValue": "", "description": "Optional stable device name used inside synced aggregate snapshots."}
+    ]
+  },
+  "omarchy": {
+    "clonedFrom": "omarchy.agents"
+  }
+}

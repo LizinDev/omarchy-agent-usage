@@ -8,8 +8,8 @@ import qs.Ui
 
 Panel {
   id: root
-  moduleName: "omarchy.agents"
-  ipcTarget: "omarchy.agents"
+  moduleName: "io.github.lizindev.agent-usage"
+  ipcTarget: "agent-usage"
   manageIpc: false
 
   readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
