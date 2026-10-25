@@ -28,7 +28,7 @@ class HermesTests(unittest.TestCase):
     self.db = self.home / "state.db"
     self.conn = sqlite3.connect(self.db)
     # The columns the collector reads, as in Hermes v0.22.2's state.db.
-    self.conn.executescript(f"""
+    self.conn.executescript("""
       CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, model TEXT, billing_provider TEXT,
         started_at REAL, ended_at REAL, actual_cost_usd REAL, estimated_cost_usd REAL,
         input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER,

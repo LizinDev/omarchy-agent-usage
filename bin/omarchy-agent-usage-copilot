@@ -13,7 +13,7 @@ import sys
 import tempfile
 import urllib.request
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 AGENT_ID = "copilot"
@@ -62,12 +62,12 @@ def event_time(value):
   try:
     if isinstance(value, (int, float)):
       stamp = value / 1000 if value > 10_000_000_000 else value
-      return datetime.fromtimestamp(stamp, timezone.utc)
+      return datetime.fromtimestamp(stamp, UTC)
     text = str(value)
     parsed = datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
     if parsed.tzinfo is None:
       parsed = parsed.astimezone()
-    return parsed.astimezone(timezone.utc)
+    return parsed.astimezone(UTC)
   except Exception:
     return None
 
@@ -118,7 +118,7 @@ def collect_local(root, now=None):
   prompt_days = []
   session_days = defaultdict(set)
   premium_requests = 0.0
-  cutoff = now.astimezone(timezone.utc) - timedelta(days=30)
+  cutoff = now.astimezone(UTC) - timedelta(days=30)
 
   for path in session_files(root):
     has_tokens = False
@@ -186,7 +186,6 @@ def collect_local(root, now=None):
       data = last_shutdown.get("data") or {}
       metrics = data.get("modelMetrics") if isinstance(data, dict) else None
       day = local_day(last_shutdown.get("timestamp"), today)
-      stamp = event_time(last_shutdown.get("timestamp"))
       for model, metric in (metrics or {}).items():
         usage = metric.get("usage") if isinstance(metric, dict) else None
         if not isinstance(usage, dict):
@@ -246,8 +245,8 @@ def utc_iso(value):
     text = str(value)
     parsed = datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
     if parsed.tzinfo is None:
-      parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc).isoformat()
+      parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).isoformat()
   except Exception:
     return None
 
@@ -341,7 +340,7 @@ def build_record(root, now=None):
     "schemaVersion": 1,
     "id": AGENT_ID,
     "name": AGENT_NAME,
-    "updatedAt": datetime.now(timezone.utc).isoformat(),
+    "updatedAt": datetime.now(UTC).isoformat(),
     "ready": True,
     "hasLocalStats": bool(stats.get("totalSessions")),
     "hasPromptStats": True,

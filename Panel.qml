@@ -235,11 +235,6 @@ Panel {
     return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][parsed.getDay()]
   }
 
-  function dayLabel(date, today) {
-    if (today) return "Today"
-    return dayName(date)
-  }
-
   function dayTooltip(day, today) {
     if (!day) return ""
     var parsed = new Date(String(day.date) + "T00:00:00")

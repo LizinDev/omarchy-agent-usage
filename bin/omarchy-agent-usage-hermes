@@ -76,7 +76,8 @@ def split(row: tuple) -> tuple[int, int, int, int]:
 
 
 def provider_label(provider: str) -> str:
-  return {"nous": "Nous", "openai-codex": "OpenAI Codex", "openrouter": "OpenRouter"}.get(provider, provider.capitalize())
+  names = {"nous": "Nous", "openai-codex": "OpenAI Codex", "openrouter": "OpenRouter"}
+  return names.get(provider, provider.capitalize())
 
 
 # ------------------------------------------------------------------- stats
@@ -165,7 +166,8 @@ def scan_state(db: Path) -> dict[str, Any]:
     active_days.add(day)
 
     bucket = usage_by_model.setdefault(name, empty_bucket())
-    for key, value in zip(("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"), parts):
+    keys = ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens")
+    for key, value in zip(keys, parts, strict=True):
       bucket[key] += value
 
     if float(at or 0) > month_cutoff and provider:
@@ -212,7 +214,7 @@ def build_record() -> dict[str, Any]:
     "schemaVersion": 1,
     "id": AGENT_ID,
     "name": AGENT_NAME,
-    "updatedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+    "updatedAt": dt.datetime.now(dt.UTC).isoformat(),
     "ready": db.is_file(),
     "tierLabel": tier,
     "usageStatusText": "",
@@ -237,7 +239,8 @@ def write_record(record: dict[str, Any]) -> None:
 
 def main() -> int:
   parser = argparse.ArgumentParser(description="Write the Hermes usage record for the Omarchy agents panel")
-  parser.add_argument("--print", "--stdout", dest="print", action="store_true", help="print the record instead of writing it")
+  parser.add_argument("--print", "--stdout", dest="print", action="store_true",
+                      help="print the record instead of writing it")
   # Accepted for parity with the packaged collectors; every run is a full scan.
   parser.add_argument("--force", action="store_true", help=argparse.SUPPRESS)
   parser.add_argument("--limits-only", action="store_true", help=argparse.SUPPRESS)

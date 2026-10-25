@@ -172,7 +172,7 @@ def collect_v2(conn: sqlite3.Connection, steps: list, prompts: list) -> set[str]
     if sid not in seen:
       continue
     counted = sums.get(sid, [0, 0, 0, 0])
-    rest = tuple(max(0, whole - part) for whole, part in zip(info["totals"], counted))
+    rest = tuple(max(0, whole - part) for whole, part in zip(info["totals"], counted, strict=True))
     if any(rest):
       provider, model = info["model"]
       steps.append((sid, provider, model, rest, max(0.0, info["cost"] - costs.get(sid, 0.0)), info["at"]))
@@ -309,7 +309,11 @@ def go_key() -> str:
 def go_limits(key: str) -> tuple[list[dict[str, Any]], str]:
   request = urllib.request.Request(
     GO_USAGE_URL,
-    headers={"Authorization": f"Bearer {key}", "Accept": "application/json", "User-Agent": "omarchy-agent-usage-opencode"},
+    headers={
+      "Authorization": f"Bearer {key}",
+      "Accept": "application/json",
+      "User-Agent": "omarchy-agent-usage-opencode",
+    },
   )
   try:
     with urllib.request.urlopen(request, timeout=10) as response:
@@ -361,7 +365,7 @@ def build_record() -> dict[str, Any]:
     "schemaVersion": 1,
     "id": AGENT_ID,
     "name": AGENT_NAME,
-    "updatedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+    "updatedAt": dt.datetime.now(dt.UTC).isoformat(),
     "ready": db.is_file(),
     "tierLabel": tier,
     "usageStatusText": status,

@@ -1,12 +1,12 @@
 import importlib.util
-from importlib.machinery import SourceFileLoader
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from unittest import mock
 
@@ -79,7 +79,7 @@ class CollectorTests(unittest.TestCase):
     yesterday = self.now - timedelta(days=1)
     old = self.now - timedelta(days=8)
     self.write_events("dates", [
-      self.usage(yesterday.astimezone(timezone.utc).isoformat(), input_tokens=10,
+      self.usage(yesterday.astimezone(UTC).isoformat(), input_tokens=10,
                  output_tokens=2, cache_read=3, cache_write=1),
       self.usage(old.isoformat(), input_tokens=5, output_tokens=1, cache_read=0, cache_write=0),
       {"type": "user.message", "timestamp": self.now.isoformat(), "data": {"content": "synthetic"}},
