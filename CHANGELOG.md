@@ -8,6 +8,8 @@ change is in [DEVLOG.md](DEVLOG.md).
 ## [Unreleased]
 
 ### Added
+- The rail follows the widget's side of the bar: a widget in the right section
+  gets its rail on the right, under the bar icon.
 - `make check`, `make dev` and the rest of a `Makefile` for development.
 - `tools/lint-qml`, which lints the panel against the installed Omarchy shell.
 - CI on GitHub Actions: the tests on Python 3.11 and 3.14, ruff, shellcheck.

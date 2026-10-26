@@ -20,8 +20,24 @@ Panel {
   readonly property color track: Style.selectedFillFor(foreground, Commons.Color.accent)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
-  // The rail: one disc per agent down the left edge.
+  // The rail: one disc per agent down the panel's edge on the bar's side, so
+  // it hangs under the bar icon (right-section widget, right-hand rail).
   readonly property bool showRail: providers.length > 1
+  readonly property string barSection: {
+    var layout = bar && bar.layoutConfig ? bar.layoutConfig : null
+    var sections = ["left", "center", "right"]
+    for (var s = 0; layout && s < sections.length; s++) {
+      var entries = layout[sections[s]]
+      if (!Array.isArray(entries)) continue
+      for (var i = 0; i < entries.length; i++) {
+        var entry = entries[i]
+        var id = entry && typeof entry === "object" ? entry.id : entry
+        if (String(id || "") === moduleName) return sections[s]
+      }
+    }
+    return "left"
+  }
+  readonly property bool railOnRight: barSection === "right"
   readonly property real railButtonSize: Style.space(40)
   readonly property real ringWidth: Math.max(2, Style.space(3))
   readonly property real markerWidth: Math.max(2, Style.space(3))
@@ -411,8 +427,10 @@ Panel {
       Column {
         id: rail
         visible: root.showRail
-        anchors.left: parent.left
+        anchors.left: root.railOnRight ? undefined : parent.left
+        anchors.right: root.railOnRight ? parent.right : undefined
         anchors.leftMargin: root.markerWidth + Style.space(6)
+        anchors.rightMargin: root.markerWidth + Style.space(6)
         anchors.top: parent.top
         width: root.railButtonSize
         spacing: Style.space(10)
@@ -437,7 +455,7 @@ Panel {
       // The accent marker slides to the agent on show.
       Rectangle {
         visible: rail.visible
-        x: 0
+        x: root.railOnRight ? parent.width - width : 0
         width: root.markerWidth
         height: Math.round(root.railButtonSize * 0.56)
         y: rail.y + root.providerIndex * (root.railButtonSize + rail.spacing) + (root.railButtonSize - height) / 2
@@ -452,8 +470,10 @@ Panel {
       Rectangle {
         id: railDivider
         visible: rail.visible
-        anchors.left: rail.right
+        anchors.left: root.railOnRight ? undefined : rail.right
+        anchors.right: root.railOnRight ? rail.left : undefined
         anchors.leftMargin: Style.space(12)
+        anchors.rightMargin: Style.space(12)
         anchors.top: parent.top
         anchors.bottom: parent.bottom
         width: 1
@@ -462,9 +482,10 @@ Panel {
 
       Flickable {
         id: panelFlick
-        anchors.left: rail.visible ? railDivider.right : parent.left
-        anchors.leftMargin: rail.visible ? Style.space(16) : 0
-        anchors.right: parent.right
+        anchors.left: rail.visible && !root.railOnRight ? railDivider.right : parent.left
+        anchors.right: rail.visible && root.railOnRight ? railDivider.left : parent.right
+        anchors.leftMargin: rail.visible && !root.railOnRight ? Style.space(16) : 0
+        anchors.rightMargin: rail.visible && root.railOnRight ? Style.space(16) : 0
         anchors.top: parent.top
         anchors.bottom: parent.bottom
         contentWidth: width

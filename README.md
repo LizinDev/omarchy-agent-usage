@@ -48,7 +48,8 @@ panel's, unchanged.
   scroll, `r` or Enter refreshes (so does the tinted button in the corner),
   Tab moves to the neighboring bar panel, Esc closes.
 - **Rail:** each ring is the agent's fullest limit (accent on the agent shown,
-  red from 90%); hover a disc for its name, that limit and today's tokens.
+  red from 90%); hover a disc for its name, that limit and today's tokens. It
+  sits on the same side as the widget in the bar.
 - **Limits:** the share used, a meter whose accent tick marks how far the
   window's clock has run (fill past the tick means ahead of pace), the reset
   countdown and a forecast: `~39% left at reset`, or `Runs out in 33m` in red.
