@@ -10,7 +10,7 @@ manifest.json            plugin manifest (id, bar widget, settings schema)
 Panel.qml                bar button and panel; components are inline at the bottom
 Main.qml                 discovers and watches the usage records, runs collectors, sync
 Agent.qml                one record's file watcher
-assets/                  agent marks: <id>.svg, plus <id>-light.svg for light surfaces
+assets/                  agent marks: <id>.svg; white marks also ship <id>-light.svg for light surfaces
 bin/collect              runs the bundled collectors, like omarchy-agent-usage-update
 bin/omarchy-agent-usage-<agent>   one stdlib-only collector per bundled agent
 tests/                   unittest suites, synthetic data only
