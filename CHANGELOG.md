@@ -16,6 +16,9 @@ change is in [DEVLOG.md](DEVLOG.md).
 - CONTRIBUTING.md, issue and pull request templates.
 
 ### Fixed
+- On light themes the panel no longer tries a `-light.svg` mark that does not
+  exist (Claude's, for one): it logged a load warning on every refresh before
+  falling back. Marks are now picked from the files actually in `assets/`.
 - A leftover variable in the Copilot collector's shutdown-snapshot fallback.
 
 ## [0.2.0] - 2026-10-25

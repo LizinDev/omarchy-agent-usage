@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Shapes
+import Qt.labs.folderlistmodel
 import Quickshell
 import Quickshell.Io
 import qs.Commons
@@ -314,7 +315,27 @@ Panel {
 
   // Agents that ship a white mark carry an `assets/<id>-light.svg` twin for
   // light surfaces; marks that work on both (Claude's brand-orange) ship one
-  // file. The luminance check decides which candidate to try first.
+  // file. The luminance check decides which twin to prefer, and only files
+  // that exist are offered: a missing one used to fail to load, log a warning
+  // and fall through on every refresh.
+  property var markFiles: ({})
+
+  FolderListModel {
+    id: markFolder
+    folder: Qt.resolvedUrl("assets")
+    nameFilters: ["*.svg"]
+    showDirs: false
+    onStatusChanged: if (status === FolderListModel.Ready) root.loadMarkFiles()
+    onCountChanged: if (status === FolderListModel.Ready) root.loadMarkFiles()
+  }
+
+  function loadMarkFiles() {
+    var files = {}
+    for (var i = 0; i < markFolder.count; i++)
+      files[String(markFolder.get(i, "fileName"))] = true
+    markFiles = files
+  }
+
   function colorChannelLuminance(value) {
     var channel = Number(value)
     if (!isFinite(channel)) return 0
@@ -333,9 +354,11 @@ Panel {
   function iconCandidatesForProvider(p, surfaceColor) {
     if (!p) return []
     var candidates = []
+    var names = [p.providerId + ".svg"]
     if (colorLuminance(surfaceColor || Commons.Color.background) >= 0.5)
-      candidates.push(Qt.resolvedUrl("assets/" + p.providerId + "-light.svg"))
-    candidates.push(Qt.resolvedUrl("assets/" + p.providerId + ".svg"))
+      names.unshift(p.providerId + "-light.svg")
+    for (var i = 0; i < names.length; i++)
+      if (markFiles[names[i]]) candidates.push(Qt.resolvedUrl("assets/" + names[i]))
     return candidates
   }
 
