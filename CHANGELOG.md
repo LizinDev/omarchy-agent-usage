@@ -21,6 +21,8 @@ change is in [DEVLOG.md](DEVLOG.md).
   in on every open, the first included.
 - Every animation follows the shell's reduce-motion setting (`Style.duration`);
   the refresh glyph stays still there.
+- IPC goes through the shell's `ShellIpc`, so `omarchy-shell` calls are answered
+  over the shell's own socket (about 7 ms) instead of a `qs ipc` client (about 50 ms).
 
 ### Fixed
 - On light themes the panel no longer tries a `-light.svg` mark that does not

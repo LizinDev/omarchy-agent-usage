@@ -409,7 +409,9 @@ Panel {
     onTriggered: root.nowMs = Date.now()
   }
 
-  IpcHandler {
+  // ShellIpc, not a bare IpcHandler: omarchy-shell answers it over the shell's
+  // own socket (~7 ms) instead of starting a qs ipc client (~50 ms).
+  ShellIpc {
     target: root.ipcTarget
     function open(): void { root.open() }
     function close(): void { root.close() }
