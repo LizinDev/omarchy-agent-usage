@@ -15,11 +15,20 @@ change is in [DEVLOG.md](DEVLOG.md).
 - CI on GitHub Actions: the tests on Python 3.11 and 3.14, ruff, shellcheck.
 - CONTRIBUTING.md, issue and pull request templates.
 
+### Changed
+- The panel is built the first time it opens, not at shell startup (the lazy
+  `content` of Omarchy 4.5's `KeyboardPanel`); the rings and meters still sweep
+  in on every open, the first included.
+- Every animation follows the shell's reduce-motion setting (`Style.duration`);
+  the refresh glyph stays still there.
+
 ### Fixed
 - On light themes the panel no longer tries a `-light.svg` mark that does not
   exist (Claude's, for one): it logged a load warning on every refresh before
   falling back. Marks are now picked from the files actually in `assets/`.
 - A leftover variable in the Copilot collector's shutdown-snapshot fallback.
+- A rescan of the agent folder asked for while one was running was dropped, so
+  an agent whose file appeared mid-scan could stay off the rail; it is queued now.
 
 ## [0.2.0] - 2026-10-25
 

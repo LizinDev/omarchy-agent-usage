@@ -369,13 +369,30 @@ Panel {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
+  // The panel's content is built the first time it opens (KeyboardPanel's
+  // lazy `content`), so these are null until then.
+  readonly property Item panelFlick: panel.loadedContent ? panel.loadedContent.panelFlick : null
+
+  // Rings and meters sweep in from zero on every open. They read this rather
+  // than `opened` because content built by the first open would otherwise
+  // start full, with nothing for the Behavior to animate.
+  property bool revealed: false
+
   onProviderIndexChanged: if (panelFlick) panelFlick.contentY = 0
-  onOpenedChanged: if (opened) {
+  onOpenedChanged: {
+    if (!opened) {
+      revealed = false
+      return
+    }
     cursorActive = false
     nowMs = Date.now()
+    panel.ensureContent()
     if (panelFlick) panelFlick.contentY = 0
     usage.refreshLimits()
-    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+    Qt.callLater(function() {
+      root.revealed = root.opened
+      if (panel.loadedContent) panel.loadedContent.forceActiveFocus()
+    })
   }
 
   Main {
@@ -422,14 +439,17 @@ Panel {
     owner: root
     bar: root.bar
     open: root.opened
-    focusTarget: keyCatcher
+    focusTarget: panel.loadedContent
     contentWidth: panel.fittedContentWidth(Style.space(420))
     // A dashboard: the whole point is reading limits and history without
     // scrolling, so it may run taller than the control panels.
-    contentHeight: panel.fittedContentHeight(Math.max(column.implicitHeight, rail.implicitHeight), Style.space(660))
+    contentHeight: panel.fittedContentHeight(panel.loadedContentHeight, Style.space(660))
 
-    PanelKeyCatcher {
+    // Built on first open, then kept: nothing here has to run while closed.
+    content: PanelKeyCatcher {
       id: keyCatcher
+      property alias panelFlick: panelFlick
+      implicitHeight: Math.max(column.implicitHeight, rail.implicitHeight)
       anchors.fill: parent
 
       onMoveRequested: function(dx, dy) {
@@ -486,7 +506,7 @@ Panel {
         color: Commons.Color.accent
 
         Behavior on y {
-          NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
+          NumberAnimation { duration: Style.duration(220); easing.type: Easing.OutCubic }
         }
       }
 
@@ -530,7 +550,7 @@ Panel {
             id: switchFade
             running: false
             NumberAnimation { to: 0.35; duration: 0 }
-            NumberAnimation { to: 1; duration: 220; easing.type: Easing.OutCubic }
+            NumberAnimation { to: 1; duration: Style.duration(220); easing.type: Easing.OutCubic }
           }
           Connections {
             target: root
@@ -933,9 +953,9 @@ Panel {
     readonly property var window: root.bindingWindow(provider)
     readonly property real percent: window ? root.clamp(window.percent, 0, 1) : -1
     readonly property bool alarming: percent >= 0.9
-    // Zero while the panel is closed, so every ring sweeps in as it opens.
-    property real shown: root.opened ? Math.max(0, percent) : 0
-    Behavior on shown { NumberAnimation { duration: 520; easing.type: Easing.OutCubic } }
+    // Zero until the panel is revealed, so every ring sweeps in as it opens.
+    property real shown: root.revealed ? Math.max(0, percent) : 0
+    Behavior on shown { NumberAnimation { duration: Style.duration(520); easing.type: Easing.OutCubic } }
 
     width: root.railButtonSize
     height: width
@@ -950,7 +970,7 @@ Panel {
       border.width: railButton.hasCursor ? Math.max(1, Style.hoverBorderWidth) : 0
       border.color: Commons.Color.accent
 
-      Behavior on color { ColorAnimation { duration: 140 } }
+      Behavior on color { ColorAnimation { duration: Style.duration(140) } }
     }
 
     Shape {
@@ -994,7 +1014,7 @@ Panel {
       provider: railButton.provider
       size: Math.round(root.railButtonSize * 0.42)
       opacity: railButton.selected || railHover.containsMouse ? 1 : 0.72
-      Behavior on opacity { NumberAnimation { duration: 140 } }
+      Behavior on opacity { NumberAnimation { duration: Style.duration(140) } }
     }
 
     MouseArea {
@@ -1071,7 +1091,7 @@ Panel {
     radius: Style.cornerRadius
     color: root.alpha(Commons.Color.accent, heroMouse.containsMouse ? 0.3 : 0.12)
 
-    Behavior on color { ColorAnimation { duration: 140 } }
+    Behavior on color { ColorAnimation { duration: Style.duration(140) } }
 
     Text {
       id: heroGlyph
@@ -1083,10 +1103,10 @@ Panel {
       font.pixelSize: Style.font.heading
 
       RotationAnimation on rotation {
-        running: heroButton.spinning
+        running: heroButton.spinning && !Style.reduceMotion
         from: 0
         to: 360
-        duration: 900
+        duration: Style.duration(900)
         loops: Animation.Infinite
         onRunningChanged: if (!running) heroGlyph.rotation = 0
       }
@@ -1216,11 +1236,11 @@ Panel {
       height: meterTrack.height
       radius: meterTrack.radius
       // Fills from empty each time the panel opens, alongside the rail rings.
-      width: root.opened ? meterTrack.width * root.clamp(meter.value, 0, 1) : 0
+      width: root.revealed ? meterTrack.width * root.clamp(meter.value, 0, 1) : 0
       color: meter.alarming ? root.urgent : root.foreground
 
       Behavior on width {
-        NumberAnimation { duration: 420; easing.type: Easing.OutCubic }
+        NumberAnimation { duration: Style.duration(420); easing.type: Easing.OutCubic }
       }
     }
 
@@ -1249,7 +1269,7 @@ Panel {
       radius: Style.cornerRadius
       color: root.alpha(root.foreground, 0.06)
       opacity: columnHover.containsMouse ? 1 : 0
-      Behavior on opacity { NumberAnimation { duration: 120 } }
+      Behavior on opacity { NumberAnimation { duration: Style.duration(120) } }
     }
 
     Rectangle {
@@ -1269,7 +1289,7 @@ Panel {
       color: dayColumn.today ? Commons.Color.accent : root.alpha(root.foreground, columnHover.containsMouse ? 0.7 : 0.45)
 
       Behavior on height {
-        NumberAnimation { duration: 260; easing.type: Easing.OutCubic }
+        NumberAnimation { duration: Style.duration(260); easing.type: Easing.OutCubic }
       }
     }
 
@@ -1312,7 +1332,7 @@ Panel {
       color: modelRow.lead ? root.alpha(Commons.Color.accent, 0.18) : root.alpha(root.foreground, 0.10)
 
       Behavior on width {
-        NumberAnimation { duration: 260; easing.type: Easing.OutCubic }
+        NumberAnimation { duration: Style.duration(260); easing.type: Easing.OutCubic }
       }
     }
 

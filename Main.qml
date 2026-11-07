@@ -26,6 +26,9 @@ Item {
   Process {
     id: listProcess
     running: false
+    // Drained on exit rather than when output ends, which can come while the
+    // process still reads as running.
+    onRunningChanged: if (!running && root.rescanQueued) Qt.callLater(root.rescanAgents)
     command: ["find", root.usageDir, "-maxdepth", "1", "-name", "*.json", "-printf", "%f\n"]
 
     stdout: StdioCollector {
@@ -34,8 +37,17 @@ Item {
     }
   }
 
+  // A rescan asked for mid-scan is queued, not dropped: the collector may have
+  // written a new agent's file after `find` already listed the folder.
+  property bool rescanQueued: false
+
   function rescanAgents() {
-    if (!listProcess.running) listProcess.running = true
+    if (listProcess.running) {
+      rescanQueued = true
+      return
+    }
+    rescanQueued = false
+    listProcess.running = true
   }
 
   function applyAgentListing(output) {
