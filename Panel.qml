@@ -422,12 +422,36 @@ Panel {
     function next(): string { root.selectProvider(root.providerIndex + 1); return "ok" }
   }
 
+  // The bar tooltip: the agent the panel shows (middle-click moves it on)
+  // and what stops its next prompt, the fullest limit or the credit left.
+  function barTooltip() {
+    var p = root.provider
+    if (!p) return "Agent usage"
+    var parts = [String(p.providerName || p.providerId)]
+    var w = root.headline
+    if (w) {
+      parts.push(w.title + " " + Math.round(root.clamp(w.percent, 0, 1) * 100) + "%")
+      var left = root.resetMsFor(w)
+      if (left > 0) parts.push("resets in " + root.formatDuration(left))
+    } else if (root.balance) {
+      parts.push(root.formatMoney(root.balance.remaining, root.balance.currency) + " left")
+    }
+    return parts.join(" · ")
+  }
+
   BarIconButton {
     id: button
     anchors.fill: parent
     bar: root.bar
+    // The narrower slot the shell's status icons (weather, updates, world
+    // clock) use, rather than the default icon slot.
+    slotSize: Style.bar.statusSlot
     text: "󱚣"
     active: root.alarming
+    tooltipText: root.barTooltip()
+    // The bar reads the text as the pointer enters; nowMs only ticks while the
+    // panel is open, so bring the countdown up to date first.
+    onTooltipHoveredChanged: if (tooltipHovered) root.nowMs = Date.now()
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.RightButton) root.launchAgent()
       else if (buttonCode === Qt.MiddleButton) root.selectProvider(root.providerIndex + 1)

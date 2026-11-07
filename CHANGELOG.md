@@ -8,6 +8,9 @@ change is in [DEVLOG.md](DEVLOG.md).
 ## [Unreleased]
 
 ### Added
+- A bar tooltip: the agent the panel shows and its fullest limit with the time
+  to its reset (`Claude Code · Weekly 65% · resets in 4d 20h`), or the credit
+  left on a prepaid agent.
 - The rail follows the widget's side of the bar: a widget in the right section
   gets its rail on the right, under the bar icon.
 - `make check`, `make dev` and the rest of a `Makefile` for development.
@@ -21,6 +24,8 @@ change is in [DEVLOG.md](DEVLOG.md).
   in on every open, the first included.
 - Every animation follows the shell's reduce-motion setting (`Style.duration`);
   the refresh glyph stays still there.
+- The bar icon sits in the shell's narrower status slot, like its weather, update
+  and world-clock icons.
 - IPC goes through the shell's `ShellIpc`, so `omarchy-shell` calls are answered
   over the shell's own socket (about 7 ms) instead of a `qs ipc` client (about 50 ms).
 
